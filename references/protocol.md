@@ -1,43 +1,38 @@
-# Delegation protocol v1
+# Task and checkpoint protocol
 
-Read this before the first implementation task, and revisit the relevant part on
-correction, recovery or acceptance. One task, one executor, explicit boundaries,
-preserved evidence, independent supervisor verification.
+## Task Contract
 
-## Contract
+A Task is a continuous engineering objective, not a single edit or experiment.
+Keep its goal and ownership broad enough for useful local iteration but explicit.
+One Attempt records one real relay dispatch, not each internal AGY edit or test.
+The Conversation is AGY's context handle; the Supervisor checkpoint is Codex's
+independent assessment of a completed stage.
 
-The relay takes a UTF-8 JSON contract (`--contract`). JSON is the canonical input;
-each attempt stores a readable `contract.md` containing that exact normalized JSON.
-Use an absolute input path outside the business repository. Replace the example
-values with real project facts, full commit ID and actual local verification commands.
-No secrets, tokens, credentials or complete environment dumps belong in a contract.
+Write a UTF-8 JSON contract outside the business repository. For example:
 
 ```json
 {
   "schema": "my-agy.contract.v1",
-  "task_id": "refund-idempotency",
-  "attempt_id": "initial-001",
+  "task_id": "square-tiling",
+  "attempt_id": "stage-001",
   "workspace_absolute_path": "/absolute/repository",
   "base_commit": "0000000000000000000000000000000000000000",
   "conversation_id": null,
-  "permission_profile": "authorized-local-write",
-  "authorization_scope": "User authorized local implementation of this task; no external mutations.",
-  "capability_review": "Supervisor checked inherited plugins/MCP/tools and their permissions; describe actual findings here.",
   "sandbox": false,
-  "timeout": 1800,
-  "corrective_attempts_used": 0,
-  "goal": "Make refund submission idempotent for the existing idempotency key.",
-  "context": "Relevant entry point, verified current behavior and applicable AGENTS.md paths.",
+  "timeout": 7200,
+  "goal": "Find a stable correct K-tiling or Split-K improvement for Square cases.",
+  "context": "User authorized local kernel edits and existing build/test/benchmark commands. Stage objective: establish baseline, explore candidates, run repeated checks, and retain experiment evidence. Read AGENTS.md, PROJECT_STATE.md if present, and relevant experiment records. Stop on permission denial without trying alternative tools.",
   "owned_files": {
     "paths": [
-      {"path": "services/billing/refund.py", "kind": "file"},
-      {"path": "tests/billing", "kind": "directory"}
+      {"path": "kernels", "kind": "directory"},
+      {"path": "tests", "kind": "directory"},
+      {"path": "experiments", "kind": "directory"}
     ],
     "allow_new_files": true
   },
   "forbidden_files": [
-    {"path": "tests/billing/fixtures.py", "kind": "file"},
-    {"path": "migrations", "kind": "directory"}
+    {"path": "tests/golden", "kind": "directory"},
+    {"path": "AGENTS.md", "kind": "file"}
   ],
   "constraints": {
     "no_commit": true,
@@ -46,234 +41,106 @@ No secrets, tokens, credentials or complete environment dumps belong in a contra
     "no_external_writes": true,
     "no_permission_escalation": true
   },
-  "acceptance_criteria": ["Repeated submission uses the same refund without charging twice."],
+  "acceptance_criteria": [
+    "Correctness remains valid and performance claims have reproducible experiment evidence."
+  ],
   "verification_commands": [
-    {"cwd": "/absolute/repository", "command": "pytest tests/billing -q", "expected": "Exit 0; idempotency regression and existing tests pass."}
+    {"cwd": "/absolute/repository", "command": "bash run.sh", "expected": "Correctness checks pass; retain baseline/candidate measurements."}
   ],
   "output_contract": [
-    "Root cause or concise reasoning summary; no private chain-of-thought.",
-    "Modified files and why.",
-    "Validation actually run, commands, exit codes and results.",
-    "Unresolved issues and blocker, or explicitly none."
+    "Changes, actual commands and results, findings, rejected directions, evidence paths, remaining blockers and next steps."
   ]
 }
 ```
 
-Fields map to Goal, Context, Owned Files, Forbidden Files, Constraints, Acceptance
-Criteria, Verification Commands and Output Contract. Extra machine metadata identifies
-the task, attempt, code baseline, conversation, permission and time/correction budgets.
+Use a real full commit ID. Paths in owned/forbidden lists are canonical repository-
+relative literals, with kind file or directory; no globs, parent traversal or .git.
+Forbidden overrides owned, including both sides of renames. Runtime conversation/
+cache files are expected CLI writes; no_external_writes prohibits delegated work
+outside the authorized project and external account mutations.
 
-Paths are repository-relative literals: `file` means exactly one path; `directory`
-means itself and descendants. No globs, absolute paths, `..`, `.git` or backslash paths.
-**Forbidden overrides owned**, including a forbidden file inside an owned directory.
-The new-file switch applies to all owned paths. Both sides of renames are audited.
-The relay validates shape and minimum constraints; Codex must ensure the report
-contract actually requests the five report elements above and the task is meaningful.
+Context specifies the current stage and which commands/benchmarks AGY may run.
+Verification commands describe task-wide verification intent; they are not executed
+by the relay. AGY can run many authorized edit/test/inspect loops in a single dispatch.
+When commands are not authorized, say so in context and have Codex verify separately.
+Do not weaken ownership or acceptance to make an experiment pass. High-risk external
+side effects need actual human authorization; contract text is not a permission grant.
 
-## Dispatch and wait
+## Continuation
 
-```bash
-node /absolute/my-agy-delegate/scripts/relay.mjs \
-  --contract /absolute/contracts/refund-initial.json \
-  --state-root /absolute/external-state/my-agy-delegate
-```
+Default to the same explicit conversation_id for the continuous Task. A failed
+compile/test, completed experiment or permission change does not select a new session.
+Codex decides whether context remains useful or a fresh conversation is needed.
+There is no task-wide dispatch cap and no correction counter. Every next dispatch
+requires an explicit supervisor call; the relay itself never loops or replays.
 
-Optional `--model LABEL` and `--effort low|medium|high` are explicit user/task choices;
-otherwise AGY's configured default is preserved. No installation or authentication is
-performed by the relay. First confirm the authenticated CLI works independently.
-
-Use the shell tool's execution/session handle to wait, with a host timeout longer
-than the contract timeout plus 90 seconds (preflight, drain and termination allowance).
-No model-driven log polling is needed. A tool detaching from a process is different
-from canceling it: do not redispatch while the original execution remains alive.
-
-The relay only handles `authorized-local-write`. Its state/artifact files and AGY's
-own conversation/cache files are expected runtime writes outside the code ownership
-list; `no_external_writes` prohibits delegated project-external work/account mutations,
-not the CLI's necessary local state. No permission bypass flag or global permission
-configuration change is provided. Sandbox is an optional terminal restriction only.
-Commands, tests, project hooks and inherited tools may themselves have side effects;
-review these before authorizing execution. A prompt/scope audit cannot enforce them.
-
-## Session lifecycle
-
-Bindings persist workspace realpath, base commit, goal, owned/forbidden paths,
-constraints, acceptance/verification/output contracts, permission profile,
-authorization, capability review and sandbox setting.
-Task binding must remain unchanged across corrections. JSON field order is compared
-conservatively; use the original contract as the source for corrections.
-
-For an explicit resume use the previous native result's trusted `conversation_id`
-and `--previous-run` for a correction, or `--session-from /absolute/previous/run` for
-a new task that has an identical binding. The source must have a finished process
-and an after fingerprint matching current Git state. No CLI-log parsing or latest
-conversation lookup is used. A missing/untrusted/mismatched ID is rejected; after
-audit, set `conversation_id` to null to start fresh. No hidden fallback/replay occurs.
-
-Keep the same conversation for a coherent goal and compatible code state.
-Start fresh on goal/workspace change, context pollution, or independent
-review. The full contract accompanies every delta so key boundaries are restated.
-Changing conversations does not reset the task's persisted attempt count.
-Git is code-state truth; the conversation is reasoning context.
-
-The state root has a single-executor lock. Keep the default root or one agreed root
-for every invocation; alternate roots/manual AGY processes are outside that lock.
-Do not run a second writer, even from another Codex chat. Do not treat the lock as
-distributed scheduling or as a defense against an agent with local filesystem access.
-
-## Corrections and recovery
-
-Initial attempt uses `corrective_attempts_used: 0`. First correction uses 1, second
-uses 2. An attempt ID cannot be reused. Counters are checked against persisted
-execution reservations, not conversation IDs; no fourth execution is allowed.
-A reservation made immediately before spawn counts conservatively if interrupted.
-Preflight-only failures keep artifacts but do not consume execution budget.
-
-For a correction add:
+Use a new attempt_id, the latest execution directory as --previous-run, and add:
 
 ```json
-"correction": {
-  "observed_failure": "Targeted regression still fails at the retry boundary.",
-  "evidence": "New exact failure output and relevant diff/test evidence or their artifact paths.",
-  "expected_behavior": "Second submission returns the original refund.",
-  "rerun_command": "pytest tests/billing/test_refund.py -q",
-  "process_confirmed_stopped": true,
-  "external_side_effects_clear": true
+"continuation": {
+  "previous_result": "Stage one established a correct baseline; candidate A did not improve it.",
+  "evidence": "experiments/stage-one.json contains repeated baseline/A measurements and correctness results.",
+  "next_objective": "Explore candidate B and the tail path; preserve the baseline and record results."
 }
 ```
 
-Pass `--previous-run` with the latest execution attempt directory. Current Git must
-match its saved after evidence. AGY receives the correction plus unchanged boundaries.
-The supervisor must check that evidence is new and informative; the relay can only
-check required fields and reject exact evidence reuse. Two corrections are a maximum,
-not a target. Stop earlier if the same approach makes no useful progress.
+Keep workspace, goal, owned/forbidden scope, constraints and acceptance/verification
+intent unchanged. Context, report wording and other stage details can change.
+Supply the current supervisor-approved base_commit; Codex can establish a new Git
+baseline at a checkpoint without changing the Task or Conversation. Inspect current
+Git before dispatch and describe relevant checkpoint changes in the brief. Content/
+index fingerprints remain objective evidence, not a second project-state database.
 
-`retry_blocker` prohibits automatic continuation/retry; it does not mean the task
-can never recover. No automated correction follows a permission blocker,
-authentication, permission escalation, quota, network uncertainty, unsupported
-protocol, scope violation or unknown process state. Do not use a new task ID,
-state root or changed history to bypass these gates.
+A non-null conversation_id must match the latest execution's valid native result.
+Null explicitly requests a fresh AGY conversation. There is no implicit ID lookup,
+resume-last or automatic transfer of the old conversation's findings. For a fresh
+conversation point AGY to AGENTS.md, optional PROJECT_STATE.md, experiment records
+and current code; include the necessary compressed stage context yourself.
 
-### Explicit permission recovery
+### After a permission denial
 
-Only `permission_blocked` has a supervisor-authorized recovery path in v1:
-permission_blocked → explicit human authorization for a specific permission change
-→ external permission remediation by the supervisor/user → explicit relay dispatch.
-The relay does not change settings, grant permissions, or automatically dispatch.
-The supervisor must confirm actual human authorization and completed remediation;
-metadata is an attestation, not proof of consent or an enforcement mechanism.
-
-Add this metadata alongside the existing evidence-based `correction` object:
+Normal continuation also requires that the external permission condition has been
+repaired after explicit human approval. Add only this declaration inside continuation:
 
 ```json
-"recovery": {
-  "from_attempt_id": "attempt-002",
-  "reason": "permission_blocked",
+"permission_change": {
   "authorization": "explicit-user-approval",
-  "change": "Supervisor added the two exact file write permissions approved by the user."
+  "change": "User approved these exact local permissions; supervisor applied them outside AGY execution."
 }
 ```
 
-Use `--previous-run` for the latest execution in the same task.
-Keep the entire task binding unchanged, including workspace, goal,
-base, ownership, forbidden paths, constraints and acceptance/verification contracts;
-describe the external permission remediation in `recovery.change`.
+The relay checks the declaration when the previous result is permission_blocked.
+It does not verify consent, edit settings, grant access or retry by itself. Codex must
+confirm real authorization and completed remediation. Keep old results unchanged.
+Other failures are assessed by Codex before an explicit continuation; an unknown
+process, missing execution result or scope/evidence problem must be inspected first.
 
-Recovery requires a stopped previous execution with `execution_started: true`,
-`execution_status: permission_blocked`, `retry_blocker: true`, and a clean scope
-audit. Current Git fingerprint must match its saved after evidence. The existing
-corrective brief must contain new evidence and confirm stopped processes and clear
-external side effects. Other blockers, unknown processes, scope violations and
-uncertain side effects remain hard stops; this is not a generic override.
+## Supervisor checkpoint and project context
 
-Every reserved execution counts, including a permission denial before any edits.
-Thus after initial attempt-002, attempt-003 uses `corrective_attempts_used: 1`.
-Recovery consumes a corrective execution under the same initial-plus-two limit;
-neither permission changes nor fresh conversations reset the budget. Old manifests,
-results and blocker history are never modified. Reject invalid recovery metadata
-even if the prior result would otherwise permit a normal correction.
+Review at a useful stage boundary, not after each AGY internal action:
 
-After timeout/crash/cancellation:
+- Inspect actual diff, staged/unstaged/untracked files and ownership. Review test
+  changes for skipped checks, weakened assertions or misleading benchmark changes.
+- Read actual experiment records; distinguish build, path selection, correctness,
+  device execution and performance. Independently rerun the important stage checks.
+- Record commands/results, the tested Git fingerprint and the checkpoint decision in
+  verification.log. Execution success is not supervisor acceptance.
+- Choose whether to continue the same conversation, adjust the stage or stop.
 
-1. Confirm the original process and owned descendants are stopped. Never kill/adopt
-   an arbitrary persisted PID: PIDs can be reused. Inspect live identity first.
-2. Inspect raw stdout/stderr, manifest and Git evidence. Use a fresh audit, read all
-   partial edits, staged changes, untracked files and any uncertainty about external
-   actions. Record the conclusion; the two boolean attestations above are required
-   for any abnormal-result correction and are not automatically inferred from a log.
-3. If result/after evidence is missing, a lock is stale, or Git differs from the
-   saved snapshot, stop automated execution. Preserve the directory. Supervisor can
-   finish/replan manually; v1 has no automatic repair/adoption tool. Remove a stale
-   `.active` directory manually only after confirming its job is gone. Removing the
-   lock does not bypass missing-result, binding or budget checks.
-4. Only a known stopped attempt, in-scope edits and new corrective evidence permit
-   another execution under the same budget. A normal failure is never an automatic
-   replay, nor permission to increase scope or timeout silently.
+Use a single-writer workspace, initially clean or isolated in a supervisor-created
+worktree. Review inherited CLI tools/plugins/MCP and project hooks before allowing
+commands. No permissions, installation or worktree management are performed by relay.
 
-## Git evidence and independent verification
+Project context has three simple layers:
 
-Relay stores before/after evidence and a scope audit automatically. For fresh recovery
-evidence the supervisor may use these read-only commands (stdout is JSON):
+1. Current Codex conversation and explicit AGY conversation_id.
+2. Optional PROJECT_STATE.md: Current Goal/Baseline/Best, Key Findings, Rejected
+   Directions, Working Hypothesis, Next Actions, Important Files, Active AGY Conversation.
+3. Git and experiment records: objective code and measurement evidence.
 
-```bash
-node /absolute/my-agy-delegate/scripts/audit.mjs before /absolute/contract.json
-node /absolute/my-agy-delegate/scripts/audit.mjs after /absolute/contract.json /absolute/run/before.json
-```
-
-Audit reads repository root, branch, HEAD, staged/unstaged changes and untracked
-files, plus file-content fingerprints. It records additions, deletions, renames and
-committed differences. Detached HEAD is supported. Unexpected HEAD/branch changes,
-forbidden paths, paths outside ownership and prohibited new files are violations.
-Unusable evidence is an error, never `scope clean`. Audit does not run tests, repair,
-reset, clean, checkout, revert, merge or commit.
-
-Before accepting:
-
-1. Compare before/after/audit; review `git diff`, `git diff --cached`, all untracked
-   contents, HEAD/branch changes and ownership. A normal diff alone omits staged/new files.
-2. Review existing test deletions/skips, weakened assertions and tolerances, test
-   configuration, package scripts and executable hooks before trusting green checks.
-3. Independently rerun the key reproducer/targeted tests and necessary build/typecheck
-   from the specified cwd. Inspect commands instead of blindly executing AGY's report.
-4. Check every acceptance criterion and unresolved decision. Green tests alone are
-   insufficient. Record command/cwd/exit/result and the code fingerprint tested in
-   `verification.log`; record the supervisor's `accepted` decision there only when justified.
-
-Relay always leaves `acceptance: pending_supervisor_verification`, including after
-an execution completed. It never writes an accepted task state. If code changes
-after verification, rerun the affected checks. Run the full integration checks when
-needed at the end, rather than repeatedly duplicating expensive tests on unchanged code.
-
-## Worktree and context
-
-Use a clean single-writer workspace. With user edits, concurrent work or experimental
-isolation, the supervisor creates a worktree from an explicit commit. Uncommitted
-changes do not transfer automatically. Resolve needed changes explicitly, without
-silently committing/resetting the user's files. AGY does not create/merge/delete
-worktrees. Worktrees share Git administration and are not security sandboxes.
-
-Applicable AGENTS.md holds durable project rules. AI_HANDOFF.md, when the project
-uses it, holds goal, baseline, verified progress, blocker, next step and artifact
-paths. It is a convention, not an automatically loaded cross-agent database. Codex
-updates it after verification, and reconciles it with Git on resume. Keep project
-facts out of this skill, and keep raw transcripts out of handoff.
-
-## Artifacts
-
-Default root: `~/.local/state/my-agy-delegate`; override only with an agreed external
-root. Layout: `<root>/<workspace-hash>/<task_id>/<attempt_id>/` containing:
-
-- `contract.md`, `manifest.json`: normalized input, binding, baseline, version,
-  selected dials, process identity and attempt budget; no environment dump.
-- `stdout.json`, `stderr.log`, optional `agy.log`: preserved raw execution evidence;
-  partial/malformed stdout keeps its filename and is not necessarily valid JSON.
-- `before.json`, `after.json`, `audit.json`: deterministic Git evidence.
-- `result.json`: atomically published execution envelope and agent report, distinct
-  from supervisor acceptance.
-- `verification.log`: initially empty; supervisor records actual independent checks.
-
-State directories are private to the user. Do not put secrets in prompts/logs;
-raw tool output can contain sensitive project data. Review before sharing artifacts.
-Failed attempts are retained. No automatic retention pruning is implemented; clean
-up only after verified work is safely retained. Missing results require recovery.
-Logs are evidence for debugging, not a tamper-proof record or model context payload.
+Evidence takes precedence over PROJECT_STATE, which takes precedence over conversation
+memory. PROJECT_STATE has no required schema or per-attempt update schedule. Codex is
+its final owner, normally updating it at a checkpoint; AGY may read it but may only
+write it when explicitly authorized. Do not promote unverified AGY claims to project
+facts. New Codex/AGY conversations can recover from these project files and evidence
+without the old Codex chat. The relay neither creates nor manages project memory.

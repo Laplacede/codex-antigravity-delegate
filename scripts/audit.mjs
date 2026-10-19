@@ -36,14 +36,12 @@ export function loadContract(path) {
   for (const key of ['task_id', 'attempt_id']) {
     if (typeof c[key] !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(c[key])) throw Error(`invalid ${key}`);
   }
-  for (const key of ['goal', 'context', 'authorization_scope', 'capability_review']) requiredString(c[key], key);
+  for (const key of ['goal', 'context']) requiredString(c[key], key);
   if (!isAbsolute(c.workspace_absolute_path || '')) throw Error('workspace_absolute_path must be absolute');
   c.workspace_absolute_path = realpathSync(c.workspace_absolute_path);
   if (!/^[a-f0-9]{40,64}$/.test(c.base_commit || '')) throw Error('base_commit must be a full commit id');
   if (c.conversation_id !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(c.conversation_id || '')) throw Error('invalid conversation_id; use null for a fresh conversation');
-  if (c.permission_profile !== 'authorized-local-write') throw Error('v1 supports authorized-local-write only; no verified read-only enforcement is bundled');
   if (typeof c.sandbox !== 'boolean') throw Error('sandbox must be an explicit boolean (terminal restriction, not a read-only claim)');
-  if (!Number.isInteger(c.corrective_attempts_used) || c.corrective_attempts_used < 0 || c.corrective_attempts_used > 2) throw Error('corrective_attempts_used must be 0..2');
   if (!Number.isInteger(c.timeout) || c.timeout < 1 || c.timeout > 2_147_423) throw Error('timeout must be seconds in 1..2147423');
   if (!c.owned_files || typeof c.owned_files.allow_new_files !== 'boolean') throw Error('owned_files.allow_new_files is required');
   validatePaths(c.owned_files.paths, 'owned_files.paths');
@@ -96,8 +94,8 @@ export function collectEvidence(workspace) {
       else throw Error(`unsupported nested repository/directory: ${path}`);
     } catch (e) { if (e.code === 'ENOENT') hash.update('missing'); else throw e; }
   }
-  return { schema: 'my-agy.git.v1', workspace, repository_root: root, branch, head, staged, unstaged,
-    untracked, tracked, index_fingerprint: indexFingerprint, clean: !status, fingerprint: hash.digest('hex') };
+  return { schema: 'my-agy.git.v1', workspace, branch, head, staged, unstaged,
+    untracked, clean: !status, fingerprint: hash.digest('hex') };
 }
 function matches(path, entries) {
   return entries.some(e => path === e.path || (e.kind === 'directory' && path.startsWith(e.path + '/')));
@@ -112,7 +110,7 @@ function symlinkAncestor(path, root) {
 }
 export function compareEvidence(c, before, after) {
   const violations = [];
-  if (before.workspace !== after.workspace || after.repository_root !== c.workspace_absolute_path) violations.push('workspace_changed');
+  if (before.workspace !== after.workspace || after.workspace !== c.workspace_absolute_path) violations.push('workspace_changed');
   if (before.head !== after.head || after.head !== c.base_commit) violations.push('unexpected_HEAD_change');
   if (before.branch !== after.branch) violations.push('unexpected_branch_change');
   const committed = nameStatus(git(after.workspace, ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-z', '-M', c.base_commit, 'HEAD']));
@@ -130,14 +128,14 @@ export function compareEvidence(c, before, after) {
   return { schema: 'my-agy.audit.v1', scope: violations.length ? 'scope violation' : 'scope clean',
     violations: [...new Set(violations)], changed_paths: paths, additions,
     deletions: changes.filter(e => e.status[0] === 'D'), renames: changes.filter(e => e.status[0] === 'R'),
-    committed, before, after };
+    committed };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const [mode, contractPath, beforePath] = process.argv.slice(2);
-    if (!['before', 'after'].includes(mode) || !contractPath || (mode === 'after' && !beforePath)) throw Error('usage: node audit.mjs before CONTRACT.json | after CONTRACT.json BEFORE.json');
+    if (!['before', 'after'].includes(mode) || !contractPath || (mode === 'after' && !beforePath)) throw Error('usage: node audit.mjs before CONTRACT.json | after CONTRACT.json MANIFEST.json');
     const c = loadContract(contractPath); const current = collectEvidence(c.workspace_absolute_path);
-    const result = mode === 'before' ? current : compareEvidence(c, JSON.parse(readFileSync(beforePath, 'utf8')), current);
+    const result = mode === 'before' ? current : compareEvidence(c, JSON.parse(readFileSync(beforePath, 'utf8')).before, current);
     process.stdout.write(JSON.stringify(result, null, 2) + '\n');
     if (result.scope === 'scope violation') process.exitCode = 1;
   } catch (e) { process.stderr.write(`audit: evidence unavailable: ${e.message}\n`); process.exitCode = 2; }

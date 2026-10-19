@@ -1,188 +1,113 @@
-# Runtime v1
+# Relay runtime
 
-## Provenance and changes
+## Scope and provenance
 
-Upstream: https://github.com/amElnagdy/delegate-skills
+The two scripts are a single-dispatch POSIX runtime, not a task service. relay.mjs
+adapts the native AGY interface and owns its process group. audit.mjs validates
+contract shape and reads Git/content evidence; it never repairs files or runs tests.
+No MCP, daemon, scheduler, parallel pool, session registry, memory database, policy
+engine, automatic handoff summary or autonomous retry is included.
 
-Baseline commit: `3aa72d681a79e2a9d09bd9a316353003ae1cb4a7`.
-Directly derived file: `scripts/relay.mjs`, from
-`skills/agy-delegate/scripts/relay.mjs`. LICENSE retains upstream MIT attribution.
-The local audit implementation and protocol are additions. No bridge code was copied.
-The two reference checkouts remain unmodified and are not runtime dependencies.
+The process lifecycle derives from MIT-licensed delegate-skills, commit
+3aa72d681a79e2a9d09bd9a316353003ae1cb4a7; LICENSE retains attribution. The upstream
+checkouts are references, not runtime dependencies. Actual deterministic/E2E results
+belong in validation reports, not a second list of compatibility claims here.
 
-Retained upstream implementation: argv-array spawn without a shell, separate POSIX
-process group, tree termination, watchdog, relay signal forwarding, delayed SIGKILL,
-byte-preserving pipe capture (UTF-8 decoded after collection), abnormal child exit handling, inherited-pipe drain grace,
-bounded changelog/version probe, brief byte-size guard and atomic result publication.
-The byte capture replaces upstream’s duplicate in-memory decoded stdout accumulation.
-Original process-boundary scenarios informed local tests; the upstream test harness
-was not copied because it assumes its fleet/package layout and legacy result schema.
+## Invocation and control flow
 
-Removed: fleet/lane resolution, resume-last, configurable projects/additional roots,
-automatic sandbox-plus-bypass read-only mapping, all bypass options, unstable-log
-stall detection and log-regex session extraction, automatic commit expectations,
-full report echoing and mandatory Codex background MCP. No PTY retry is provided.
+```bash
+node /absolute/my-agy-delegate/scripts/relay.mjs \
+  --contract /absolute/stage.json \
+  --state-root /absolute/external-state \
+  --previous-run /absolute/latest-execution
+```
 
-Added: canonical JSON contract, private unique persistent attempts, native JSON
-decoding, separate execution/report/acceptance fields, Git audit, explicit conversation
-binding, persisted three-attempt cap, single-executor lock, recovery gates.
-The bridge contributed only ownership, independent verification, failure retention
-and bounded evidence-based correction ideas; no MCP/Python/job manager is required.
+Omit --previous-run for the first dispatch. Keep one state root for the project.
+Optional --model and --effort low|medium|high preserve the user's configured defaults
+when absent. No permission bypass, latest-session lookup or installation is provided.
 
-## Compatibility evidence
+Actual control flow:
 
-2026-10-18, local macOS / Node **25.9.0**: installed AGY reports **1.4.1** via `agy changelog`;
-`agy --help` lists the expected headless/JSON/conversation/workspace flags. These
-checks do not call an agent and do not validate authentication or write permissions.
-The automated suite uses a fake AGY executable and disposable real Git repositories.
-There is no authenticated model-backed end-to-end claim. Never claim all AGY versions
-or all hosts are supported. Node built-ins only; no dependency installation needed.
+```text
+load contract → check task/session and current Git → create attempt
+→ version/help preflight → reserve execution → dispatch AGY exactly once
+→ capture raw output → collect after/scope evidence → publish result
+→ supervisor checkpoint outside relay
+```
 
-Final validation on that host: `node --test tests/runtime.test.mjs` from this skill
-directory: **37 passed, 0 failed, 0 skipped**, approximately 97.3 seconds. Includes
-an actual 61-second relay watchdog wait, partial output/modifications, resistant-child
-SIGKILL escalation, inherited-pipe drain, live descendant lock retention, UTF-8 split
-bytes, JSON/error cases, explicit session/state mismatch, Git ownership/index/HEAD,
-failed artifacts and persisted correction limits. Tests use fixtures only, no real
-model calls or external project edits. Both scripts passed `node --check`.
+The initial workspace must be clean. Later stages preserve the task boundary, but
+can use a new explicit supervisor baseline after a checkpoint. Snapshots are captured
+before and after each dispatch; Git changes during preflight stop dispatch. The scope
+audit covers cumulative changes against the supplied base, including pre-existing
+uncommitted edits. Commit supervisor checkpoint edits outside owned scope into the
+new baseline before continuing, or the audit will flag them too. The relay never
+stashes/resets/cleans or infers who made an uncommitted edit.
 
-SKILL frontmatter passed Ruby standard-library YAML parsing, required name/description
-and supported-field checks. The skill-creator Python validator could not start because
-the available Python lacks PyYAML; no package was installed. YAML validation is not
-a behavioral evaluation. Both upstream checkouts had clean Git status after validation.
+One cooperative lock per state root prevents a second relay execution. History is
+read from attempt manifests; an execution reservation with no result stops continuation.
+A preflight-only attempt consumes no execution and does not become a session source.
+Continuation needs the latest execution, a stopped process, usable after evidence
+and a clean scope audit. Permission authorization is described in protocol.md.
+Normal stage continuation has no dispatch-count limit.
 
-Primary interface reference: https://antigravity.google/docs/cli/headless
-Native format assumptions below follow the JSON example read on 2026-10-18.
-CLI behavior can change; passing `--help` is a capability hint, not proof of semantics.
-
-Only the POSIX runtime lifecycle is supported for v1. Windows tree-kill code was
-removed and execution is rejected until group ownership/recovery semantics are
-independently validated. No TUI automation.
-
-## Invocation
-
-Fresh:
+Fresh AGY argv:
 
 ```text
 agy --new-project --add-dir ABSOLUTE_WORKSPACE --output-format json
     --print-timeout Ns --log-file ABSOLUTE_LOG --print=CONTRACT_PROMPT
 ```
 
-Resume replaces new-project/add-dir with `--conversation EXPLICIT_ID`. The current
-cwd and the stored workspace binding must agree. Optional model/effort and sandbox
-flags are explicit. There is no inherited-shell prompt expansion; prompts are argv
-values and are visible to host process-list observers. Keep prompts focused and
-under 120 KiB; reference workspace context instead of embedding large files.
+Resume uses --conversation EXPLICIT_ID instead of new-project/add-dir. cwd is the
+contract workspace. Optional sandbox/model/effort are argv values, never shell text.
+The prompt is a generic executor instruction plus the full normalized contract and
+stage brief, limited to 120 KiB. No prior reports or transcripts are automatically
+summarized. Tests/benchmarks follow the contract and actual permissions, not a fixed
+executor-verification mode. Wait using the shell tool's execution handle; do not
+redispatch because a tool detached. Allow contract timeout plus 90 seconds on the host.
 
-Exactly one agent prompt is executed per dispatched attempt. The version/help
-preflights do not send an agent prompt. Unsupported capability is a preflight result;
-unsupported/malformed execution output is preserved without another AGY invocation.
+## Output and process behavior
 
-## Native JSON and results
+Native JSON must have string conversation_id, status and response fields; unexpected
+shape or malformed output is preserved and fails closed. A requested conversation ID
+must match the returned one. Unknown extra native fields remain intact. Diagnostic
+classification reads stderr/native error, not the agent report. Native SUCCESS/exit 0
+alone do not prove completion; permission denials, partial output, bad scope and live
+descendants prevent execution_completed. Only the supervisor can accept stage claims.
 
-Expected top-level object:
+Headless help may put normal output on stderr: preflight captures both streams and
+records the command, exit/signal/error and raw streams. A failed preflight never
+launches an agent. There is no format fallback, PTY fallback or second dispatch.
 
-```json
-{"conversation_id":"opaque-id","status":"SUCCESS","response":"Agent report"}
-```
+argv spawn leads a separate POSIX process group. Watchdog runs at contract timeout
+plus 60 seconds, escalating TERM to KILL after 10 seconds; cancellation forwards signals
+and escalates after 2 seconds. Exit drains inherited pipes for 500 ms. Unknown surviving
+descendants retain the lock. Never adopt/kill a persisted arbitrary PID; inspect the
+original job before clearing stale state. No automatic process adoption is implemented.
 
-Unknown extra fields are preserved (including usage); required fields must have the
-documented types. A nonempty response and `SUCCESS` are necessary for
-`execution_completed`, along with acceptable process exit, no diagnostic blocker
-and a clean scope audit. Other native statuses fail closed. An absent/invalid ID,
-wrong shape or unexpected envelope is `unsupported_protocol`. Resume returning a
-different ID is `conversation_mismatch`; it is never silently rebound.
+## Artifacts and limitations
 
-Raw stdout is retained even when empty, partial, malformed, an array or a new format.
-Do not mine it with regex for a resumable ID. `agent_report` is the native response;
-`cli_envelope` is the raw parsed object; `acceptance` always awaits the supervisor.
+Each unique <state>/<workspace-hash>/<task_id>/<attempt_id>/ holds:
 
-Execution statuses include `execution_completed`, `empty_output`, `malformed_json`,
-`unsupported_protocol`, `native_failed`, `permission_blocked`,
-`authentication_blocked`, `quota_blocked`, `network_uncertainty`,
-`partial_output`, `timeout`, `aborted`, `failed`, `agy_unavailable`,
-`conversation_mismatch`, `scope_violation`, `audit_failed`, `process_unknown`.
-The native status is retained separately. Relay exit 0 means execution completed,
-never task accepted. `process_exit_code` records the child's native exit code and
-is null if there was no child or it died by signal; `signal`
-records the child's termination signal and `relay_signal` records a relay interrupt.
-`exitCode` is the relay's normalized nonzero failure code.
+- manifest.json: normalized contract (including requested conversation), selected dials,
+  start time, execution reservation, process/version metadata and the unique before checkpoint.
+- result.json: execution_status, native_result (including returned conversation ID),
+  process outcome, the unique after checkpoint and audit conclusion, finish/error/relay exit.
+- preflight.json: raw capability diagnostics, when the help probe was reached.
+- stdout.json and stderr.log: exact bytes collected incrementally; stdout may be invalid JSON.
+- verification.log: supervisor checkpoint evidence/decision; not read or accepted by relay.
+- agy.log: AGY debug output, when produced; not a separate task-state source.
 
-Diagnostic classification scans stderr/native error, never the report text, using
-conservative patterns. A soft permission denial, partial-output/timeout notice or
-uncompleted background task cannot become execution success merely through exit 0.
-Patterns cannot cover every future AGY diagnostic; the independent review remains
-mandatory. False-positive conservative failure is possible. No format fallback.
+Manifest/result publication is atomic. Raw streams survive partial execution. Old
+attempts are never overwritten; manifests are updated only for their own live dispatch.
+No acceptance flag, copied agent report, task binding cache or correction counter is
+stored. This development revision does not migrate the earlier internal artifact layout;
+historical E2E evidence remains historical and must not be edited into the new format.
 
-## Permissions
+Git content/index fingerprints detect edits invisible to status text. Audit checks
+owned/forbidden paths, additions/deletions/renames and HEAD/branch changes, but is not
+an OS security boundary. It cannot see reverted writes, ignored files, other worktrees,
+all Git metadata writes, external effects or detached processes. Unsupported nested
+repositories fail evidence collection. Review commands/hooks and actual CLI grants.
 
-An explicit `recovery` contract may cross only a stopped, scope-clean
-`permission_blocked` retry gate after supervisor-attested human authorization and
-external permission remediation. It requires the latest
-`--previous-run`, unchanged binding/Git state and the existing corrective evidence
-and budget checks. See protocol.md; other blockers remain hard stops. No settings
-or historical results are modified and no automatic dispatch is introduced.
-
-No dangerous bypass flag is accepted or inferred. `permission_profile` supports
-authorized local writes only. Neither default settings, sandbox nor scope audit is
-a read-only guarantee. Unapproved operations must return a blocker. Inherited AGY
-settings, plugins, MCP, external tools, shell aliases/hooks and test commands remain
-part of the supervisor's capability review; this runtime does not reconfigure them.
-An ownership prompt cannot prevent all external side effects. High-risk mutations
-are outside ordinary delegation and require a concrete human authorization step.
-
-## Timeouts, cancellation and recovery
-
-The contract timeout is passed to AGY. The retained relay watchdog expires after
-that deadline plus 60 seconds so a stuck AGY cannot wait forever. Cancellation uses
-SIGTERM/SIGINT/SIGHUP forwarding and escalates to SIGKILL. Wall timeout escalates
-after 10 seconds. Parent exit allows 500 ms for inherited pipe drain. The raw output
-is saved incrementally, even if the relay later receives an uncatchable SIGKILL.
-
-An owned POSIX process group still alive at result time yields `process_unknown`
-and retains the lock. A normal parent's exit does not prove descendants have stopped.
-A canceled/timed-out group is swept with SIGKILL before publishing; process state
-remains conservative if descendants have not yet disappeared. Processes that detach
-themselves from the group are outside the containment guarantee. No stored PID is
-automatically adopted/killed on restart. No daemon/subagent lifecycle is implemented.
-
-If the relay crashes, result/audit may be absent and `.active` may persist. Preserve
-the attempt, confirm live process identity and Git state, then use the supervisor
-recovery procedure in protocol.md. Do not rerun, change formats or bypass permissions.
-
-## Evidence boundaries and complexity audit
-
-Audit covers current tracked files and nonignored untracked files, staged/unstaged
-changes, committed differences and branch/HEAD. It cannot observe a write reverted
-before collection, ignored files, other worktrees, Git admin changes that leave these
-signals unchanged, network effects or detached processes. Nested repositories and
-submodules fail evidence collection rather than pretending full coverage. Symlink
-ancestors of changed paths are violations. Tests/commands are never executed by audit.
-
-Final file-by-file deletion check:
-
-| File | Why retained |
-| --- | --- |
-| SKILL.md | Discoverable entry point and essential supervisor decisions. |
-| scripts/relay.mjs | Process ownership, capture, timeout/cancellation, native result and recovery lifecycle. |
-| scripts/audit.mjs | Shared deterministic Git/scope evidence, also usable during manual recovery. |
-| references/protocol.md | Contract, independent acceptance and session/correction decisions kept out of SKILL. |
-| references/runtime.md | Version/provenance, tested assumptions, failure boundaries and recovery details. |
-| LICENSE | Required attribution for directly derived code. |
-| tests/runtime.test.mjs | Development-only behavior checks for fragile process/Git/protocol invariants. |
-
-Required mechanisms retained: atomic results prevent partial reads; unique directories
-prevent overwrite/replay ambiguity; the execution lock prevents cooperative concurrent
-writers; persisted attempts prevent conversation-based budget reset; bindings and Git
-content/index fingerprints prevent stale resume; raw output preserves partial failures;
-the owned-group check avoids claiming completion with a live descendant. Independent
-verification remains a supervisor decision, so there is no acceptance script or agent.
-
-Deleted unnecessary code during this pass: unused duration parser, unsupported Windows
-tree-kill path, unstable-log stall watcher and duplicate in-memory stdout/stderr buffers.
-No schema engine, task service, project database, installer, parallel pool or UI exists.
-
-v2 only: concurrent AGY tasks/DAG, fleet/model routing, persistent stdin sessions,
-stream UI/tool analysis, subagent tracking, background MCP, automatic worktree pools,
-merge/push automation, a second reviewer, cross-platform validation or automatic
-recovery/adoption. None is required for the v1 single-task path.
+Raw logs can contain project data; state directories are private and no environment
+or credential dumps are intentionally recorded. No automatic retention or cleanup.

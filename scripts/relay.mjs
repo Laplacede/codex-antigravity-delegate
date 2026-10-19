@@ -6,9 +6,9 @@
  * Commit: 3aa72d681a79e2a9d09bd9a316353003ae1cb4a7
  * Retained: argv spawn, process groups, watchdog, signal/exit handling,
  * pipe drain, version probe and atomic result publication; raw byte capture replaces decoding per chunk.
- * Local additions: native JSON, contracts, audit, session binding, attempt budget.
+ * Local additions: native JSON, task continuation, Git evidence and scope audit.
  * Usage: node relay.mjs --contract CONTRACT.json [--state-root DIR]
- *        [--previous-run DIR] [--session-from DIR] [--model LABEL] [--effort LEVEL]
+ *        [--previous-run DIR] [--model LABEL] [--effort LEVEL]
  * Never auto-replays. Never bypasses permissions. See references/runtime.md.
  */
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, appendF
   realpathSync, readdirSync, rmSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { constants, homedir } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 import { loadContract, collectEvidence, compareEvidence, inside } from './audit.mjs';
 const VERSION_PROBE_TIMEOUT_MS = 10_000;
 function atomicJson(path, value) {
@@ -27,9 +28,9 @@ function atomicJson(path, value) {
 function parseArgs(argv) {
   const opts = { stateRoot: join(homedir(), '.local/state/my-agy-delegate') };
   const keys = { '--contract': 'contract', '--state-root': 'stateRoot', '--previous-run': 'previousRun',
-    '--session-from': 'sessionFrom', '--model': 'model', '--effort': 'effort' };
+    '--model': 'model', '--effort': 'effort' };
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--help') { process.stdout.write('Usage: node relay.mjs --contract CONTRACT.json [--state-root DIR] [--previous-run DIR] [--session-from DIR] [--model LABEL] [--effort low|medium|high]\n'); process.exit(0); }
+    if (argv[i] === '--help') { process.stdout.write('Usage: node relay.mjs --contract CONTRACT.json [--state-root DIR] [--previous-run DIR] [--model LABEL] [--effort low|medium|high]\n'); process.exit(0); }
     const key = keys[argv[i]];
     if (!key || opts[key] !== undefined && key !== 'stateRoot' || !argv[i + 1]) throw Error(`invalid or duplicate option: ${argv[i]}`);
     opts[key] = argv[++i];
@@ -39,28 +40,27 @@ function parseArgs(argv) {
   return opts;
 }
 function binding(c) {
-  return { workspace: c.workspace_absolute_path, base_commit: c.base_commit, goal: c.goal,
+  return { workspace: c.workspace_absolute_path, goal: c.goal,
     owned_files: c.owned_files, forbidden_files: c.forbidden_files, constraints: c.constraints,
-    acceptance_criteria: c.acceptance_criteria, verification_commands: c.verification_commands,
-    output_contract: c.output_contract,
-    permission_profile: c.permission_profile, authorization_scope: c.authorization_scope,
-    capability_review: c.capability_review, sandbox: c.sandbox };
+    acceptance_criteria: c.acceptance_criteria, verification_commands: c.verification_commands };
 }
-function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
 function readJson(path) { return JSON.parse(readFileSync(path, 'utf8')); }
+function nativeConversation(value) {
+  return value && !Array.isArray(value) && typeof value === 'object' &&
+    typeof value.status === 'string' && typeof value.response === 'string' &&
+    /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value.conversation_id || '') ? value.conversation_id : null;
+}
 function prepareRunDir(opts) {
   const c = opts.c;
-  // Validate before mkdir: never even create an output directory inside the repo.
   let existing = resolve(opts.stateRoot);
   while (!existsSync(existing)) existing = dirname(existing);
   if (inside(realpathSync(existing), opts.cd) || inside(resolve(opts.stateRoot), opts.cd)) throw Error('state root must be outside the business repository');
   mkdirSync(opts.stateRoot, { recursive: true, mode: 0o700 });
   opts.stateRoot = realpathSync(opts.stateRoot);
   if (inside(opts.stateRoot, opts.cd)) throw Error('state root must be outside the business repository');
-  // One executor per state root. Stale locks are deliberately not adopted/deleted.
   const lock = join(opts.stateRoot, '.active');
   mkdirSync(lock, { mode: 0o700 });
-  writeFileSync(join(lock, 'owner.json'), JSON.stringify({ relay_pid: process.pid, task_id: c.task_id, workspace: opts.cd }));
+  writeFileSync(join(lock, 'owner.json'), JSON.stringify({ relay_pid: process.pid }));
   let release = true;
   process.on('exit', () => { if (release) rmSync(lock, { recursive: true, force: true }); });
   const retainLock = () => { release = false; };
@@ -71,64 +71,45 @@ function prepareRunDir(opts) {
   const history = readdirSync(taskDir).map(id => join(taskDir, id)).filter(dir => existsSync(join(dir, 'manifest.json')))
     .map(dir => ({ dir, manifest: readJson(join(dir, 'manifest.json')) }));
   for (const h of history) {
-    if (!same(h.manifest.binding, binding(c))) throw Error('task binding changed; supervisor must replan without resetting this task budget');
-    if (!existsSync(join(h.dir, 'result.json'))) throw Error(`recovery required: missing result in ${h.dir}`);
+    if (!isDeepStrictEqual(binding(h.manifest.contract), binding(c))) throw Error('task boundary changed; supervisor must review task scope');
+    if (h.manifest.execution_started && !existsSync(join(h.dir, 'result.json'))) throw Error(`missing execution result: inspect ${h.dir}`);
   }
-  const executed = history.filter(h => h.manifest.execution_started).sort((a,b) => a.manifest.attempt_number - b.manifest.attempt_number);
-  if (executed.length >= 3) throw Error('task exhausted initial + two corrective attempts');
-  if (c.corrective_attempts_used !== executed.length) throw Error(`corrective_attempts_used must equal ${executed.length}`);
+  const previous = history.filter(h => h.manifest.execution_started)
+    .sort((a,b) => a.manifest.started_at.localeCompare(b.manifest.started_at)).at(-1);
   const before = collectEvidence(opts.cd);
-  if (before.head !== c.base_commit) throw Error('current HEAD does not match base_commit');
-  if (!executed.length && !before.clean) throw Error('initial workspace must be clean; supervisor should create an isolated worktree');
-  if (c.recovery !== undefined && !executed.length) throw Error('permission recovery requires a previous execution');
-  if (executed.length) {
-    const previous = executed.at(-1);
-    if (!opts.previousRun || realpathSync(opts.previousRun) !== previous.dir) throw Error('--previous-run must identify the latest execution attempt');
+  if (before.head !== c.base_commit) throw Error('current HEAD does not match the supplied base_commit');
+  if (!previous && !before.clean) throw Error('initial workspace must be clean; supervisor should use an isolated worktree');
+  if (previous) {
+    if (!opts.previousRun || realpathSync(opts.previousRun) !== previous.dir) throw Error('--previous-run must identify the latest execution');
     const result = readJson(join(previous.dir, 'result.json'));
-    if (c.recovery !== undefined) {
-      const recovery = c.recovery;
-      if (!recovery || Array.isArray(recovery) || typeof recovery !== 'object' ||
-          previous.manifest.task_id !== c.task_id || result.task_id !== c.task_id ||
-          previous.manifest.execution_started !== true ||
-          result.attempt_id !== previous.manifest.attempt_id ||
-          recovery.from_attempt_id !== previous.manifest.attempt_id ||
-          recovery.reason !== 'permission_blocked' || result.execution_status !== 'permission_blocked' ||
-          result.retry_blocker !== true || result.process_terminated !== true || result.audit_scope !== 'scope clean' ||
-          recovery.authorization !== 'explicit-user-approval' ||
-          typeof recovery.change !== 'string' || !recovery.change.trim()) {
-        throw Error('permission recovery requires the latest stopped, scope-clean permission_blocked attempt, explicit user authorization and an external permission change');
+    if (!result.process.terminated || result.audit.scope !== 'scope clean' || !result.after) throw Error('inspect previous process and Git evidence before continuing');
+    for (const key of ['previous_result', 'evidence', 'next_objective']) {
+      if (typeof c.continuation?.[key] !== 'string' || !c.continuation[key].trim()) throw Error(`continuation.${key} required`);
+    }
+    if (result.execution_status === 'permission_blocked') {
+      const change = c.continuation.permission_change;
+      if (change?.authorization !== 'explicit-user-approval' || typeof change.change !== 'string' || !change.change.trim()) {
+        throw Error('permission continuation requires explicit user authorization and an externally completed permission change');
       }
-    } else if (!result.process_terminated || result.retry_blocker) {
-      throw Error(`previous run requires supervisor recovery: ${result.execution_status}`);
     }
-    if (readJson(join(previous.dir, 'after.json')).fingerprint !== before.fingerprint) throw Error('Git state differs from previous after evidence; audit/replan first');
-    for (const key of ['observed_failure', 'evidence', 'expected_behavior', 'rerun_command']) {
-      if (typeof c.correction?.[key] !== 'string' || !c.correction[key].trim()) throw Error(`correction.${key} required`);
+    if (c.conversation_id !== null) {
+      const id = nativeConversation(result.native_result);
+      if (!id || id !== c.conversation_id ||
+          previous.manifest.contract.conversation_id && previous.manifest.contract.conversation_id !== id) {
+        throw Error('explicit conversation does not match the previous execution');
+      }
     }
-    if (c.correction.evidence === previous.manifest.contract.correction?.evidence) throw Error('correction needs new evidence');
-    if (result.execution_status !== 'execution_completed' &&
-        (c.correction.process_confirmed_stopped !== true || c.correction.external_side_effects_clear !== true)) throw Error('abnormal-result correction requires process and side-effect review');
-  } else if (opts.previousRun) throw Error('no previous execution for this task');
-  if (c.conversation_id !== null) {
-    const from = opts.sessionFrom || opts.previousRun;
-    if (!from) throw Error('explicit conversation requires --session-from or --previous-run');
-    const manifest = readJson(join(from, 'manifest.json')); const result = readJson(join(from, 'result.json'));
-    if (!same(manifest.binding, binding(c)) || result.conversation_id !== c.conversation_id ||
-        !result.conversation_trusted || !result.process_terminated ||
-        readJson(join(from, 'after.json')).fingerprint !== before.fingerprint) throw Error('conversation binding/state mismatch; use null for a fresh conversation after audit');
-  } else if (opts.sessionFrom) throw Error('--session-from requires explicit conversation_id');
+  } else if (opts.previousRun || c.conversation_id !== null || c.continuation !== undefined) {
+    throw Error('continuation requires a previous execution in the same task');
+  }
   const dir = join(taskDir, c.attempt_id);
-  mkdirSync(dir, { mode: 0o700 }); // exclusive: never reuse an artifact directory
-  const run = { dir, retainLock, releaseLock, startedAt: new Date().toISOString(), finalPath: join(dir, 'stdout.json'),
+  mkdirSync(dir, { mode: 0o700 });
+  const run = { dir, retainLock, releaseLock, finalPath: join(dir, 'stdout.json'),
     logPath: join(dir, 'agy.log'), stderrPath: join(dir, 'stderr.log'), resultPath: join(dir, 'result.json'),
     manifestPath: join(dir, 'manifest.json'), before };
-  run.manifest = { schema: 'my-agy.manifest.v1', task_id: c.task_id, attempt_id: c.attempt_id,
-    binding: binding(c), conversation_id: c.conversation_id, contract: c, before,
-    attempt_number: executed.length + 1, corrective_attempts_used: c.corrective_attempts_used,
-    execution_started: false, started_at: run.startedAt, model: opts.model ?? null, effort: opts.effort ?? null };
+  run.manifest = { contract: c, before, started_at: new Date().toISOString(), execution_started: false,
+    model: opts.model ?? null, effort: opts.effort ?? null };
   atomicJson(run.manifestPath, run.manifest);
-  atomicJson(join(dir, 'before.json'), before);
-  writeFileSync(join(dir, 'contract.md'), '# Task Contract\n\n```json\n' + JSON.stringify(c, null, 2) + '\n```\n', { mode: 0o600 });
   for (const path of [run.finalPath, run.stderrPath, join(dir, 'verification.log')]) writeFileSync(path, '', { mode: 0o600 });
   return run;
 }
@@ -163,41 +144,25 @@ function nativeResult(raw, stderr, requestedId) {
   else if (/timed? ?out|timeout.{0,40}(expired|reached|exceeded)|deadline.{0,30}(expired|exceeded)|partial output|truncat|terminating.*background task/i.test(diagnostic)) status = 'partial_output';
   return { envelope, status };
 }
-function makeResultWriter(opts, version, run) {
+function makeResultWriter(opts, run) {
   return extra => {
-    const raw = readFileSync(run.finalPath, 'utf8');
-    const stderr = readFileSync(run.stderrPath, 'utf8');
-    const parsed = nativeResult(raw, stderr, opts.c.conversation_id);
-    let executionStatus = ['timeout', 'aborted', 'failed', 'agy_unavailable', 'unsupported_protocol'].includes(extra.status) ? extra.status : parsed.status;
-    let audit;
+    const parsed = nativeResult(readFileSync(run.finalPath, 'utf8'), readFileSync(run.stderrPath, 'utf8'), opts.c.conversation_id);
+    let status = ['timeout', 'aborted', 'failed', 'agy_unavailable', 'unsupported_protocol'].includes(extra.status) ? extra.status : parsed.status;
+    let after = null; let audit;
     try {
-      const after = collectEvidence(opts.cd); atomicJson(join(run.dir, 'after.json'), after);
+      after = collectEvidence(opts.cd);
       audit = compareEvidence(opts.c, run.before, after);
     } catch (e) { audit = { scope: 'evidence unavailable', error: e.message }; }
-    atomicJson(join(run.dir, 'audit.json'), audit);
-    if (extra.status === 'failed' && ['permission_blocked','authentication_blocked','quota_blocked','network_uncertainty','unsupported_protocol'].includes(parsed.status)) executionStatus = parsed.status;
-    if (executionStatus === 'execution_completed' && audit.scope !== 'scope clean') executionStatus = audit.scope === 'scope violation' ? 'scope_violation' : 'audit_failed';
+    if (extra.status === 'failed' && ['permission_blocked','authentication_blocked','quota_blocked','network_uncertainty','unsupported_protocol'].includes(parsed.status)) status = parsed.status;
+    if (status === 'execution_completed' && audit.scope !== 'scope clean') status = audit.scope === 'scope violation' ? 'scope_violation' : 'audit_failed';
     const terminated = !run.child?.pid || (run.child.exitCode !== null || run.child.signalCode !== null) && !ownedGroupAlive(run.child.pid);
-    if (!terminated) executionStatus = 'process_unknown';
+    if (!terminated) status = 'process_unknown';
     if (terminated) run.releaseLock();
-    const blocked = ['permission_blocked','authentication_blocked','quota_blocked','network_uncertainty','unsupported_protocol','conversation_mismatch','scope_violation','audit_failed','process_unknown'];
-    const result = { schema: 'my-agy.execution.v1', task_id: opts.c.task_id, attempt_id: opts.c.attempt_id,
-      execution_status: executionStatus, acceptance: 'pending_supervisor_verification',
-      process_exit_code: run.child?.exitCode ?? null, signal: run.child?.signalCode ?? null,
-      relay_signal: extra.signal ?? null,
-      process_terminated: terminated, retry_blocker: blocked.includes(executionStatus) || audit.scope !== 'scope clean',
-      conversation_id: parsed.envelope?.conversation_id ?? null,
-      conversation_trusted: !!parsed.envelope && !['malformed_json','unsupported_protocol','conversation_mismatch'].includes(parsed.status),
-      native_status: parsed.envelope?.status ?? null, cli_envelope: parsed.envelope,
-      agent_report: typeof parsed.envelope?.response === 'string' ? parsed.envelope.response : '',
-      agy_version: version, started_at: run.startedAt, finished_at: new Date().toISOString(),
-      audit_scope: audit.scope, artifacts: run.dir,
-      stderr_tail: stderr.split('\n').filter(Boolean).slice(-20), error: extra.error ?? null,
-      exitCode: executionStatus === 'execution_completed' ? 0 : extra.exitCode || 1 };
-    run.manifest.conversation_id = result.conversation_trusted ? result.conversation_id : null;
-    run.manifest.execution_status = executionStatus;
-    run.manifest.finished_at = result.finished_at;
-    atomicJson(run.manifestPath, run.manifest);
+    const result = { execution_status: status, native_result: parsed.envelope,
+      process: { exit_code: run.child?.exitCode ?? null, signal: run.child?.signalCode ?? null,
+        relay_signal: extra.signal ?? null, terminated },
+      after, audit, finished_at: new Date().toISOString(), error: extra.error ?? null,
+      exitCode: status === 'execution_completed' ? 0 : extra.exitCode || 1 };
     atomicJson(run.resultPath, result);
     return result;
   };
@@ -367,23 +332,23 @@ function dispatchToAgy(opts, brief, run, writeResult, watchdogMs) {
 
 
 function printSummary(result, resultPath) {
-  process.stdout.write(JSON.stringify({ execution_status: result.execution_status, acceptance: result.acceptance,
-    conversation_id: result.conversation_id, audit_scope: result.audit_scope, result: resultPath }) + '\n');
+  process.stdout.write(JSON.stringify({ execution_status: result.execution_status,
+    conversation_id: nativeConversation(result.native_result), scope: result.audit.scope, result: resultPath }) + '\n');
 }
 function main() {
   if (process.platform === 'win32') throw Error('v1 POSIX lifecycle only; Windows is not validated');
   const opts = parseArgs(process.argv.slice(2));
   opts.c = loadContract(opts.contract); opts.cd = opts.c.workspace_absolute_path;
-  const brief = 'Act as the bounded implementation executor. Read applicable AGENTS.md. Follow this contract; do not commit, push, install dependencies, write outside scope, escalate permissions, or perform external account actions. Run verification synchronously and finish only after it completes. Report concise reasoning, modified files, validation actually run, unresolved issues and blockers. Do not provide private chain-of-thought.\n' + JSON.stringify(opts.c, null, 2);
+  const brief = 'Act as the long-running engineering executor for this Task. Read applicable AGENTS.md and PROJECT_STATE.md if present. Work toward the stage objective within this contract. You may perform multiple edit/build/test/inspect/benchmark loops in this dispatch when authorized by the contract and current permissions; do not stop after the first edit or failed test. Do not run unauthorized commands or bypass a denial. Finish with a concise checkpoint report: changes, actual commands/results, findings, experiment evidence, remaining blockers and next steps. Do not commit, push, install dependencies, escalate permissions or perform external account actions. Do not write PROJECT_STATE.md unless explicitly authorized. Do not provide private chain-of-thought.\n' + JSON.stringify(opts.c, null, 2);
   if (Buffer.byteLength(brief, 'utf8') > 120 * 1024) throw Error('contract prompt exceeds argv byte limit (120 KiB)');
   const run = prepareRunDir(opts);
   let version;
   try { version = agyVersion(VERSION_PROBE_TIMEOUT_MS); }
   catch (e) {
-    const result = makeResultWriter(opts, 'unknown', run)({ status: 'timeout', exitCode: 124, error: `version probe failed: ${e.message}` });
+    const result = makeResultWriter(opts, run)({ status: 'timeout', exitCode: 124, error: `version probe failed: ${e.message}` });
     printSummary(result, run.resultPath); process.exit(result.exitCode);
   }
-  const writeResult = makeResultWriter(opts, version, run);
+  const writeResult = makeResultWriter(opts, run);
   if (!version) {
     const result = writeResult({ status: 'agy_unavailable', exitCode: 127, error: 'agy not on PATH; no execution dispatched' });
     printSummary(result, run.resultPath); process.exit(127);
@@ -419,7 +384,7 @@ function main() {
     const result = writeResult({ status: 'failed', exitCode: 2, error: 'workspace changed during preflight; no execution dispatched' });
     printSummary(result, run.resultPath); process.exit(result.exitCode);
   }
-  run.manifest.execution_started = true; // reserve before spawn: crashes here require recovery, not replay
+  run.manifest.execution_started = true; // reserve before spawn: crashes here require inspection, not replay
   atomicJson(run.manifestPath, run.manifest);
   run.retainLock();
   dispatchToAgy(opts, brief, run, writeResult, opts.c.timeout * 1000 + 60_000);
