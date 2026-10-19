@@ -35,19 +35,21 @@ load contract → check task/session and current Git → create attempt
 → supervisor checkpoint outside relay
 ```
 
-The initial workspace must be clean. Later stages preserve the task boundary, but
+The initial workspace must be clean. Task identity freezes only workspace, goal and
+forbidden paths; expected paths and acceptance/verification/temporary stage parameters
+are mutable. The minimum safety constraints are validated on every dispatch. Later stages
 can use a new explicit supervisor baseline after a checkpoint. Snapshots are captured
 before and after each dispatch; Git changes during preflight stop dispatch. The scope
 audit covers cumulative changes against the supplied base, including pre-existing
-uncommitted edits. Commit supervisor checkpoint edits outside owned scope into the
-new baseline before continuing, or the audit will flag them too. The relay never
+uncommitted edits. Changes outside expected paths are reported in observations and
+do not require a new baseline merely to continue. The relay never
 stashes/resets/cleans or infers who made an uncommitted edit.
 
 One cooperative lock per state root prevents a second relay execution. History is
 read from attempt manifests; an execution reservation with no result stops continuation.
 A preflight-only attempt consumes no execution and does not become a session source.
 Continuation needs the latest execution, a stopped process, usable after evidence
-and a clean scope audit. Permission authorization is described in protocol.md.
+and no hard audit violations. Permission authorization is described in protocol.md.
 Normal stage continuation has no dispatch-count limit.
 
 Fresh AGY argv:
@@ -71,7 +73,7 @@ Native JSON must have string conversation_id, status and response fields; unexpe
 shape or malformed output is preserved and fails closed. A requested conversation ID
 must match the returned one. Unknown extra native fields remain intact. Diagnostic
 classification reads stderr/native error, not the agent report. Native SUCCESS/exit 0
-alone do not prove completion; permission denials, partial output, bad scope and live
+alone do not prove completion; permission denials, partial output, hard audit violations and live
 descendants prevent execution_completed. Only the supervisor can accept stage claims.
 
 Headless help may put normal output on stderr: preflight captures both streams and
@@ -104,8 +106,11 @@ stored. This development revision does not migrate the earlier internal artifact
 historical E2E evidence remains historical and must not be edited into the new format.
 
 Git content/index fingerprints detect edits invisible to status text. Audit checks
-owned/forbidden paths, additions/deletions/renames and HEAD/branch changes, but is not
-an OS security boundary. It cannot see reverted writes, ignored files, other worktrees,
+expected-path hits, additional paths, forbidden paths, additions/deletions/renames and
+HEAD/branch changes. Only explicit forbidden hits, inconsistent workspace/HEAD/branch,
+symlink-ancestor uncertainty or unavailable evidence fail the audit; scope clean may
+still contain observations. This is not an OS security boundary. It cannot see
+reverted writes, ignored files, other worktrees,
 all Git metadata writes, external effects or detached processes. Unsupported nested
 repositories fail evidence collection. Review commands/hooks and actual CLI grants.
 

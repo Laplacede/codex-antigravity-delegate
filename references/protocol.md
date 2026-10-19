@@ -3,7 +3,7 @@
 ## Task Contract
 
 A Task is a continuous engineering objective, not a single edit or experiment.
-Keep its goal and ownership broad enough for useful local iteration but explicit.
+Use a continuous goal and explicit hard prohibitions; expected files can evolve.
 One Attempt records one real relay dispatch, not each internal AGY edit or test.
 The Conversation is AGY's context handle; the Supervisor checkpoint is Codex's
 independent assessment of a completed stage.
@@ -27,8 +27,7 @@ Write a UTF-8 JSON contract outside the business repository. For example:
       {"path": "kernels", "kind": "directory"},
       {"path": "tests", "kind": "directory"},
       {"path": "experiments", "kind": "directory"}
-    ],
-    "allow_new_files": true
+    ]
   },
   "forbidden_files": [
     {"path": "tests/golden", "kind": "directory"},
@@ -55,15 +54,21 @@ Write a UTF-8 JSON contract outside the business repository. For example:
 
 Use a real full commit ID. Paths in owned/forbidden lists are canonical repository-
 relative literals, with kind file or directory; no globs, parent traversal or .git.
-Forbidden overrides owned, including both sides of renames. Runtime conversation/
+owned_files.paths lists this dispatch's expected paths (and may be empty), not an
+exclusive write boundary. Additional non-forbidden paths are audit observations for
+checkpoint review, not execution failures. Explicit forbidden paths remain hard
+boundaries, including both sides of renames, even when also expected. Actual CLI
+permissions are unchanged by an expected-path list. Runtime conversation/
 cache files are expected CLI writes; no_external_writes prohibits delegated work
 outside the authorized project and external account mutations.
 
 Context specifies the current stage and which commands/benchmarks AGY may run.
-Verification commands describe task-wide verification intent; they are not executed
+Verification commands describe current-stage verification intent; they are not executed
 by the relay. AGY can run many authorized edit/test/inspect loops in a single dispatch.
 When commands are not authorized, say so in context and have Codex verify separately.
-Do not weaken ownership or acceptance to make an experiment pass. High-risk external
+Do not misrepresent acceptance or weaken explicit prohibitions to make an experiment
+pass. The five minimum constraints shown above must remain true; additional temporary
+constraints describe the current dispatch. High-risk external
 side effects need actual human authorization; contract text is not a permission grant.
 
 ## Continuation
@@ -84,8 +89,11 @@ Use a new attempt_id, the latest execution directory as --previous-run, and add:
 }
 ```
 
-Keep workspace, goal, owned/forbidden scope, constraints and acceptance/verification
-intent unchanged. Context, report wording and other stage details can change.
+Task identity is workspace, goal and explicit forbidden paths. Expected files,
+acceptance criteria, verification commands, context, experiment parameters and
+temporary constraints may change in the same Task/Conversation; they are stage
+instructions, not identity. Keep genuinely lasting prohibitions in forbidden_files
+and retain the minimum safety constraints.
 Supply the current supervisor-approved base_commit; Codex can establish a new Git
 baseline at a checkpoint without changing the Task or Conversation. Inspect current
 Git before dispatch and describe relevant checkpoint changes in the brief. Content/
@@ -113,13 +121,15 @@ The relay checks the declaration when the previous result is permission_blocked.
 It does not verify consent, edit settings, grant access or retry by itself. Codex must
 confirm real authorization and completed remediation. Keep old results unchanged.
 Other failures are assessed by Codex before an explicit continuation; an unknown
-process, missing execution result or scope/evidence problem must be inspected first.
+process, missing execution result or hard-boundary/evidence problem must be inspected
+first. Additional non-forbidden paths alone do not block continuation.
 
 ## Supervisor checkpoint and project context
 
 Review at a useful stage boundary, not after each AGY internal action:
 
-- Inspect actual diff, staged/unstaged/untracked files and ownership. Review test
+- Inspect actual diff, staged/unstaged/untracked files, expected-path hits and additional
+  paths. Review test
   changes for skipped checks, weakened assertions or misleading benchmark changes.
 - Read actual experiment records; distinguish build, path selection, correctness,
   device execution and performance. Independently rerun the important stage checks.

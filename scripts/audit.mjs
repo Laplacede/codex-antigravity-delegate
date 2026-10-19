@@ -43,9 +43,7 @@ export function loadContract(path) {
   if (c.conversation_id !== null && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(c.conversation_id || '')) throw Error('invalid conversation_id; use null for a fresh conversation');
   if (typeof c.sandbox !== 'boolean') throw Error('sandbox must be an explicit boolean (terminal restriction, not a read-only claim)');
   if (!Number.isInteger(c.timeout) || c.timeout < 1 || c.timeout > 2_147_423) throw Error('timeout must be seconds in 1..2147423');
-  if (!c.owned_files || typeof c.owned_files.allow_new_files !== 'boolean') throw Error('owned_files.allow_new_files is required');
-  validatePaths(c.owned_files.paths, 'owned_files.paths');
-  if (!c.owned_files.paths.length) throw Error('owned_files.paths cannot be empty');
+  validatePaths(c.owned_files?.paths, 'owned_files.paths');
   validatePaths(c.forbidden_files, 'forbidden_files');
   for (const key of ['no_commit', 'no_push', 'no_dependency_install', 'no_external_writes', 'no_permission_escalation']) {
     if (c.constraints?.[key] !== true) throw Error(`constraints.${key} must be true`);
@@ -110,6 +108,7 @@ function symlinkAncestor(path, root) {
 }
 export function compareEvidence(c, before, after) {
   const violations = [];
+  const observations = [];
   if (before.workspace !== after.workspace || after.workspace !== c.workspace_absolute_path) violations.push('workspace_changed');
   if (before.head !== after.head || after.head !== c.base_commit) violations.push('unexpected_HEAD_change');
   if (before.branch !== after.branch) violations.push('unexpected_branch_change');
@@ -121,12 +120,12 @@ export function compareEvidence(c, before, after) {
   const additions = paths.filter(path => !basePaths.has(path));
   for (const path of paths) {
     if (matches(path, c.forbidden_files)) violations.push(`forbidden:${path}`);
-    else if (!matches(path, c.owned_files.paths)) violations.push(`not_owned:${path}`);
-    if (!c.owned_files.allow_new_files && additions.includes(path)) violations.push(`new_file_not_allowed:${path}`);
+    if (!matches(path, c.owned_files.paths)) observations.push(`additional_path:${path}`);
     if (symlinkAncestor(path, after.workspace)) violations.push(`symlink_ancestor:${path}`);
   }
   return { schema: 'my-agy.audit.v1', scope: violations.length ? 'scope violation' : 'scope clean',
-    violations: [...new Set(violations)], changed_paths: paths, additions,
+    violations: [...new Set(violations)], observations, changed_paths: paths,
+    expected_paths: paths.filter(path => matches(path, c.owned_files.paths)), additions,
     deletions: changes.filter(e => e.status[0] === 'D'), renames: changes.filter(e => e.status[0] === 'R'),
     committed };
 }

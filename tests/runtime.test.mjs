@@ -38,7 +38,8 @@ if (mode === 'loop') {
   const green = cp.spawnSync(process.execPath,['--check','src/main.js']);
   fs.writeFileSync('tests/experiment.json',JSON.stringify({red:red.status,green:green.status}));
 }
-if (mode === 'scope') fs.writeFileSync('other.txt', 'out of scope');
+if (mode === 'additional') { fs.mkdirSync('scripts',{recursive:true}); fs.writeFileSync('scripts/bench_case11.py','# local benchmark helper'); }
+if (mode === 'forbidden') fs.writeFileSync('tests/check.js', 'forbidden edit');
 if (mode === 'commit') { fs.writeFileSync('src/main.js','changed'); cp.execFileSync('git',['add','src/main.js']); cp.execFileSync('git',['commit','-qm','unexpected']); }
 if (mode.startsWith('hang')) { if (mode === 'hang-resistant') process.on('SIGTERM',()=>{}); process.stdout.write('{"partial":"保留'); process.stderr.write('still working\\n'); setInterval(() => {}, 1000); }
 else if (mode === 'orphan') { cp.spawn(process.execPath,['-e','setTimeout(()=>{},10000)'],{stdio:'inherit'}).unref(); console.log(JSON.stringify({conversation_id:'conv-001',status:'SUCCESS',response:'done'})); }
@@ -77,10 +78,10 @@ function fixture(t) {
   writeFileSync(join(bin,'agy'),fakeSource); chmodSync(join(bin,'agy'),0o755);
   const calls = join(root, 'calls.jsonl');
   const helpCalls = join(root, 'help-calls.jsonl');
-  const c = { schema:'my-agy.contract.v1', task_id:'task', attempt_id:'a0', workspace_absolute_path:repo,
+  const c = { schema:'my-agy.contract.v1', task_id:'task', attempt_id:'a0', workspace_absolute_path:realpathSync(repo),
     base_commit:git('rev-parse','HEAD'), conversation_id:null, sandbox:false,
     timeout:5, goal:'Fix module',context:'Disposable fixture',
-    owned_files:{paths:[{path:'src',kind:'directory'},{path:'tests',kind:'directory'}],allow_new_files:true},
+    owned_files:{paths:[{path:'src',kind:'directory'},{path:'tests',kind:'directory'}]},
     forbidden_files:[{path:'tests/check.js',kind:'file'}],
     constraints:{no_commit:true,no_push:true,no_dependency_install:true,no_external_writes:true,no_permission_escalation:true},
     acceptance_criteria:['Correct module'],verification_commands:[{cwd:repo,command:'node --check src/main.js',expected:'exit 0'}],
@@ -187,6 +188,32 @@ test('same task accepts reordered object keys, changed report prose and a superv
   const p=f.run('ok',['--previous-run',first.dir]);assert.equal(p.status,0,p.stderr);
   assert.equal(p.result.native_result.conversation_id,'conv-001');assert.equal(p.result.after.head,f.c.base_commit);
 });
+test('stage verification, acceptance, expected files and temporary constraints can change in the same conversation',t=>{
+  const f=fixture(t);f.c.constraints.case9_only=true;const first=f.run();f.next('stage-2',first);
+  f.c.verification_commands=[{cwd:f.repo,command:'node --test tests',expected:'Case 9/10/11 pass'}];
+  f.c.acceptance_criteria=['Case 9/10/11 correctness and benchmark evidence'];
+  f.c.owned_files.paths.push({path:'scripts',kind:'directory'});f.c.constraints.case9_only=false;
+  f.c.context='Expanded benchmark stage';f.c.continuation.next_objective='Add a Case 11 benchmark helper';
+  const p=f.run('additional',['--previous-run',first.dir]);assert.equal(p.status,0,p.stderr);
+  assert.equal(p.result.native_result.conversation_id,first.result.native_result.conversation_id);assert.equal(f.count(),2);
+  assert(p.result.audit.expected_paths.includes('scripts/bench_case11.py'));assert.deepEqual(p.result.audit.violations,[]);
+});
+test('additional non-forbidden helper is reported and does not stop explicit continuation',t=>{
+  const f=fixture(t);const first=f.run('additional');assert.equal(first.status,0,first.stderr);assert.equal(f.count(),1);
+  assert(first.result.audit.observations.includes('additional_path:scripts/bench_case11.py'));
+  assert(first.result.after.untracked.includes('scripts/bench_case11.py'));assert.deepEqual(first.result.audit.violations,[]);
+  f.next('stage-2',first);const second=f.run('ok',['--previous-run',first.dir]);
+  assert.equal(second.status,0,second.stderr);assert.equal(second.result.native_result.conversation_id,first.result.native_result.conversation_id);
+  assert.equal(f.count(),2);
+});
+test('workspace changes and weakening explicit hard boundaries cannot continue the task',t=>{
+  const f=fixture(t);const first=f.run();f.next('stage-2',first);f.c.forbidden_files=[];
+  assert.notEqual(f.run('ok',['--previous-run',first.dir]).status,0);assert.equal(f.count(),1);
+  f.c.forbidden_files=[{path:'tests/check.js',kind:'file'}];f.c.constraints.no_commit=false;
+  assert.notEqual(f.run('ok',['--previous-run',first.dir]).status,0);assert.equal(f.count(),1);
+  const other=fixture(t);other.c.conversation_id=first.result.native_result.conversation_id;
+  assert.notEqual(other.run('ok',['--previous-run',first.dir]).status,0);assert.equal(other.count(),0);
+});
 test('continuation requires the latest completed execution and explicit binding; fresh context remains possible',t=>{
   const f=fixture(t);const first=f.run();f.next('stage-2',first);
   assert.notEqual(f.run().status,0);assert.equal(f.count(),1);
@@ -195,10 +222,10 @@ test('continuation requires the latest completed execution and explicit binding;
   const args=JSON.parse(readFileSync(join(f.root,'calls.jsonl'),'utf8').trim().split('\n')[1]);assert(args.includes('--new-project'));
   f.next('stage-3',fresh);assert.notEqual(f.run('ok',['--previous-run',first.dir]).status,0);assert.equal(f.count(),2);
 });
-test('missing continuation brief and changed task scope are refused without another dispatch',t=>{
+test('missing continuation brief and changed goal are refused without another dispatch',t=>{
   const f=fixture(t);const first=f.run();f.next('stage-2',first);delete f.c.continuation.evidence;
   assert.notEqual(f.run('ok',['--previous-run',first.dir]).status,0);
-  f.next('stage-2',first);f.c.owned_files.paths.push({path:'other',kind:'directory'});
+  f.next('stage-2',first);f.c.goal='A different engineering goal';
   assert.notEqual(f.run('ok',['--previous-run',first.dir]).status,0);assert.equal(f.count(),1);
 });
 test('permission continuation requires explicit user approval and external remediation, without changing session or history',t=>{
@@ -220,7 +247,7 @@ test('safe failed execution can continue with the same evidence text after a sup
   assert.equal(p.status,0,p.stderr);assert.equal(f.count(),3);
 });
 test('scope violations and missing execution results cannot continue',t=>{
-  const f=fixture(t);const first=f.run('scope');f.next('stage-2',first);
+  const f=fixture(t);const first=f.run('forbidden');f.next('stage-2',first);
   assert.notEqual(f.run('ok',['--previous-run',first.dir]).status,0);assert.equal(f.count(),1);
   rmSync(join(first.dir,'result.json'));assert.notEqual(f.run('ok',['--previous-run',first.dir]).status,0);assert.equal(f.count(),1);
 });
@@ -240,21 +267,24 @@ test('initial dirty worktree and business-internal state root rejected', t=>{
   const f=fixture(t);writeFileSync(join(f.repo,'src/main.js'),'user work');const p=f.run();assert.match(p.stderr,/must be clean/);assert.equal(f.count(),0);
   const inside=join(f.repo,'state');const q=f.run('ok',['--state-root',inside]);assert.match(q.stderr,/outside/);assert(!existsSync(inside));
 });
-test('scope violation and unexpected commits retain modifications', t=>{
-  const f=fixture(t);const p=f.run('scope');assert.equal(p.result.execution_status,'scope_violation');assert(existsSync(join(f.repo,'other.txt')));
+test('forbidden edits fail and retain the reviewable worktree', t=>{
+  const f=fixture(t);const p=f.run('forbidden');assert.equal(p.result.execution_status,'scope_violation');
+  assert.equal(readFileSync(join(f.repo,'tests/check.js'),'utf8'),'forbidden edit');
+  assert(p.result.audit.violations.includes('forbidden:tests/check.js'));assert.equal(f.count(),1);
 });
 test('unexpected HEAD change is detected and preserved', t=>{
   const f=fixture(t);const p=f.run('commit');assert.equal(p.result.execution_status,'scope_violation');
   const audit=p.result.audit;assert(audit.violations.includes('unexpected_HEAD_change'));
   assert.notEqual(f.git('rev-parse','HEAD'),f.c.base_commit);
 });
-test('staged and untracked additions, no-new-file switch, forbidden precedence', t=>{
+test('audit records expected hits, staged and untracked additions, with forbidden precedence', t=>{
   const f=fixture(t);const before=collectEvidence(f.repo);
   writeFileSync(join(f.repo,'tests/check.js'),'forbidden edit');writeFileSync(join(f.repo,'src/new.js'),'new');f.git('add','src/new.js');
   writeFileSync(join(f.repo,'src/untracked.js'),'untracked');
-  f.c.owned_files.allow_new_files=false;const after=collectEvidence(f.repo);const a=compareEvidence(f.c,before,after);
-  assert(a.violations.includes('forbidden:tests/check.js'));assert(a.violations.includes('new_file_not_allowed:src/new.js'));
-  assert(a.violations.includes('new_file_not_allowed:src/untracked.js'));assert(after.staged.length);assert(after.untracked.includes('src/untracked.js'));
+  const after=collectEvidence(f.repo);const a=compareEvidence(f.c,before,after);
+  assert.deepEqual(a.violations,['forbidden:tests/check.js']);assert(a.expected_paths.includes('tests/check.js'));
+  assert(a.additions.includes('src/new.js'));assert(a.additions.includes('src/untracked.js'));
+  assert(after.staged.length);assert(after.untracked.includes('src/untracked.js'));
 });
 test('rename records both paths and deletions; forbidden old path still violates', t=>{
   const f=fixture(t);const before=collectEvidence(f.repo);f.git('mv','tests/check.js','src/moved.js');f.git('rm','src/main.js');

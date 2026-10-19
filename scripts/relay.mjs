@@ -40,9 +40,7 @@ function parseArgs(argv) {
   return opts;
 }
 function binding(c) {
-  return { workspace: c.workspace_absolute_path, goal: c.goal,
-    owned_files: c.owned_files, forbidden_files: c.forbidden_files, constraints: c.constraints,
-    acceptance_criteria: c.acceptance_criteria, verification_commands: c.verification_commands };
+  return { workspace: c.workspace_absolute_path, goal: c.goal, forbidden_files: c.forbidden_files };
 }
 function readJson(path) { return JSON.parse(readFileSync(path, 'utf8')); }
 function nativeConversation(value) {
@@ -339,7 +337,7 @@ function main() {
   if (process.platform === 'win32') throw Error('v1 POSIX lifecycle only; Windows is not validated');
   const opts = parseArgs(process.argv.slice(2));
   opts.c = loadContract(opts.contract); opts.cd = opts.c.workspace_absolute_path;
-  const brief = 'Act as the long-running engineering executor for this Task. Read applicable AGENTS.md and PROJECT_STATE.md if present. Work toward the stage objective within this contract. You may perform multiple edit/build/test/inspect/benchmark loops in this dispatch when authorized by the contract and current permissions; do not stop after the first edit or failed test. Do not run unauthorized commands or bypass a denial. Finish with a concise checkpoint report: changes, actual commands/results, findings, experiment evidence, remaining blockers and next steps. Do not commit, push, install dependencies, escalate permissions or perform external account actions. Do not write PROJECT_STATE.md unless explicitly authorized. Do not provide private chain-of-thought.\n' + JSON.stringify(opts.c, null, 2);
+  const brief = 'Act as the long-running engineering executor for this Task. Read applicable AGENTS.md and PROJECT_STATE.md if present. Work toward the stage objective within this contract. owned_files lists expected paths for review, not an exclusive write boundary; additional workspace helpers are permitted only within explicit forbidden/hard constraints and actual permissions. You may perform multiple edit/build/test/inspect/benchmark loops in this dispatch when authorized by the contract and current permissions; do not stop after the first edit or failed test. Do not run unauthorized commands or bypass a denial. Finish with a concise checkpoint report: changes, actual commands/results, findings, experiment evidence, remaining blockers and next steps. Do not commit, push, install dependencies, escalate permissions or perform external account actions. Do not write PROJECT_STATE.md unless explicitly authorized. Do not provide private chain-of-thought.\n' + JSON.stringify(opts.c, null, 2);
   if (Buffer.byteLength(brief, 'utf8') > 120 * 1024) throw Error('contract prompt exceeds argv byte limit (120 KiB)');
   const run = prepareRunDir(opts);
   let version;

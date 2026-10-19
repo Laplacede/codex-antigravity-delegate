@@ -18,6 +18,9 @@ Keep the explicit AGY conversation ID for a continuous task. Never guess a sessi
 use resume-last. Each next dispatch is a supervisor decision; the relay never replays.
 At a stage checkpoint, inspect Git changes and experiment evidence and independently
 verify the important claims before accepting them or choosing the next direction.
+Task identity is the stable goal/workspace and explicit forbidden paths. Expected
+files and stage targets may evolve; audit reports additions beyond expectations,
+while explicit forbidden/hard boundaries still fail.
 
 Git and experiment records are project truth. Optional PROJECT_STATE.md is a compact
 cross-conversation summary owned by the supervisor, not a relay-managed database.
