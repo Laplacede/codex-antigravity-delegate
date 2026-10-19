@@ -98,7 +98,6 @@ function prepareRunDir(opts) {
           typeof recovery.change !== 'string' || !recovery.change.trim()) {
         throw Error('permission recovery requires the latest stopped, scope-clean permission_blocked attempt, explicit user authorization and an external permission change');
       }
-      if (c.conversation_id !== null || opts.sessionFrom) throw Error('permission recovery requires a new conversation');
     } else if (!result.process_terminated || result.retry_blocker) {
       throw Error(`previous run requires supervisor recovery: ${result.execution_status}`);
     }

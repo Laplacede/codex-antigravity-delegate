@@ -110,8 +110,8 @@ and an after fingerprint matching current Git state. No CLI-log parsing or lates
 conversation lookup is used. A missing/untrusted/mismatched ID is rejected; after
 audit, set `conversation_id` to null to start fresh. No hidden fallback/replay occurs.
 
-Keep the same conversation for a coherent goal and compatible code/permission state.
-Start fresh on goal/workspace/permission change, context pollution, or independent
+Keep the same conversation for a coherent goal and compatible code state.
+Start fresh on goal/workspace change, context pollution, or independent
 review. The full contract accompanies every delta so key boundaries are restated.
 Changing conversations does not reset the task's persisted attempt count.
 Git is code-state truth; the conversation is reasoning context.
@@ -174,9 +174,8 @@ Add this metadata alongside the existing evidence-based `correction` object:
 }
 ```
 
-Use `--previous-run` for the latest execution in the same task, with
-`conversation_id: null` and no `--session-from`. Permission change requires a new
-conversation. Keep the entire task binding unchanged, including workspace, goal,
+Use `--previous-run` for the latest execution in the same task.
+Keep the entire task binding unchanged, including workspace, goal,
 base, ownership, forbidden paths, constraints and acceptance/verification contracts;
 describe the external permission remediation in `recovery.change`.
 

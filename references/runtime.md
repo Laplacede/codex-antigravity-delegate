@@ -118,7 +118,7 @@ mandatory. False-positive conservative failure is possible. No format fallback.
 
 An explicit `recovery` contract may cross only a stopped, scope-clean
 `permission_blocked` retry gate after supervisor-attested human authorization and
-external permission remediation. It requires a fresh conversation, the latest
+external permission remediation. It requires the latest
 `--previous-run`, unchanged binding/Git state and the existing corrective evidence
 and budget checks. See protocol.md; other blockers remain hard stops. No settings
 or historical results are modified and no automatic dispatch is introduced.

@@ -208,7 +208,7 @@ for (const [name,mutate,pattern] of [
   ['changed goal',f=>{f.c.goal='Different goal';},/binding changed/],
   ['changed acceptance',f=>{f.c.acceptance_criteria=['Weaker'];},/binding changed/],
   ['changed base',f=>{f.c.base_commit='0'.repeat(40);},/binding changed/],
-  ['reused conversation',f=>{f.c.conversation_id='conv-001';},/requires a new conversation/],
+  ['unbound conversation',f=>{f.c.conversation_id='wrong';},/conversation binding\/state mismatch/],
   ['changed Git',f=>{writeFileSync(join(f.repo,'src/main.js'),'another writer');},/Git state differs/],
   ['uncertain external side effects',f=>{f.c.correction.external_side_effects_clear=false;},/process and side-effect review/],
 ]) {
@@ -248,9 +248,9 @@ test('permission recovery needs previous execution and the latest previous-run',
   delete f.c.recovery;const first=f.run('permission');permissionRecovery(f,first);
   const noPrevious=f.run();assert.match(noPrevious.stderr,/latest execution attempt/);assert.equal(f.count(),1);
   const resumed=f.run('ok',['--previous-run',first.dir,'--session-from',first.dir]);
-  assert.match(resumed.stderr,/requires a new conversation/);assert.equal(f.count(),1);
+  assert.match(resumed.stderr,/--session-from requires explicit conversation_id/);assert.equal(f.count(),1);
 });
-test('authorized permission recovery preserves blocker history, starts fresh and consumes corrective budget',t=>{
+test('authorized permission recovery without conversation ID preserves history and consumes corrective budget',t=>{
   const f=fixture(t);const first=f.run('permission');
   const historyFiles=['manifest.json','result.json','after.json','stdout.json','stderr.log'];
   const originals=historyFiles.map(name=>readFileSync(join(first.dir,name)));
@@ -270,6 +270,19 @@ test('authorized permission recovery preserves blocker history, starts fresh and
   assert.equal(third.result.execution_status,'permission_blocked');assert.equal(f.count(),3);
   permissionRecovery(f,third,2);f.c.attempt_id='fourth';
   const fourth=f.run('ok',['--previous-run',third.dir]);assert.match(fourth.stderr,/exhausted/);assert.equal(f.count(),3);
+});
+test('authorized permission recovery can resume the bound explicit conversation',t=>{
+  const f=fixture(t);const first=f.run('permission');permissionRecovery(f,first);
+  f.c.conversation_id=first.result.conversation_id;
+  const second=f.run('ok',['--previous-run',first.dir]);
+  assert.equal(second.status,0,second.stderr);assert.equal(f.count(),2);
+  const calls=readFileSync(join(f.root,'calls.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(calls[1][calls[1].indexOf('--conversation')+1],first.result.conversation_id);
+  assert(!calls[1].includes('--new-project'));
+  assert.equal(second.result.conversation_id,first.result.conversation_id);
+  const manifest=JSON.parse(readFileSync(join(second.dir,'manifest.json'),'utf8'));
+  assert.equal(manifest.corrective_attempts_used,1);assert.equal(manifest.attempt_number,2);
+  assert.equal(JSON.parse(readFileSync(join(first.dir,'result.json'),'utf8')).retry_blocker,true);
 });
 test('missing or repeated corrective evidence does not consume another execution',t=>{
   const f=fixture(t);const first=f.run();f.correction(1);delete f.c.correction.observed_failure;
