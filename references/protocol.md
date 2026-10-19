@@ -148,10 +148,51 @@ The supervisor must check that evidence is new and informative; the relay can on
 check required fields and reject exact evidence reuse. Two corrections are a maximum,
 not a target. Stop earlier if the same approach makes no useful progress.
 
-No automated correction follows authentication, permission escalation, quota, network
-uncertainty, unsupported protocol, scope violation or unknown process state. Resolve
-these through supervisor recovery/replanning, not new attempt IDs or a fresh task ID
-for the same unchanged work. Such blockers are deliberately not cleared by a CLI flag.
+`retry_blocker` prohibits automatic continuation/retry; it does not mean the task
+can never recover. No automated correction follows a permission blocker,
+authentication, permission escalation, quota, network uncertainty, unsupported
+protocol, scope violation or unknown process state. Do not use a new task ID,
+state root or changed history to bypass these gates.
+
+### Explicit permission recovery
+
+Only `permission_blocked` has a supervisor-authorized recovery path in v1:
+permission_blocked → explicit human authorization for a specific permission change
+→ external permission remediation by the supervisor/user → explicit relay dispatch.
+The relay does not change settings, grant permissions, or automatically dispatch.
+The supervisor must confirm actual human authorization and completed remediation;
+metadata is an attestation, not proof of consent or an enforcement mechanism.
+
+Add this metadata alongside the existing evidence-based `correction` object:
+
+```json
+"recovery": {
+  "from_attempt_id": "attempt-002",
+  "reason": "permission_blocked",
+  "authorization": "explicit-user-approval",
+  "change": "Supervisor added the two exact file write permissions approved by the user."
+}
+```
+
+Use `--previous-run` for the latest execution in the same task, with
+`conversation_id: null` and no `--session-from`. Permission change requires a new
+conversation. Keep the entire task binding unchanged, including workspace, goal,
+base, ownership, forbidden paths, constraints and acceptance/verification contracts;
+describe the external permission remediation in `recovery.change`.
+
+Recovery requires a stopped previous execution with `execution_started: true`,
+`execution_status: permission_blocked`, `retry_blocker: true`, and a clean scope
+audit. Current Git fingerprint must match its saved after evidence. The existing
+corrective brief must contain new evidence and confirm stopped processes and clear
+external side effects. Other blockers, unknown processes, scope violations and
+uncertain side effects remain hard stops; this is not a generic override.
+
+Every reserved execution counts, including a permission denial before any edits.
+Thus after initial attempt-002, attempt-003 uses `corrective_attempts_used: 1`.
+Recovery consumes a corrective execution under the same initial-plus-two limit;
+neither permission changes nor fresh conversations reset the budget. Old manifests,
+results and blocker history are never modified. Reject invalid recovery metadata
+even if the prior result would otherwise permit a normal correction.
 
 After timeout/crash/cancellation:
 

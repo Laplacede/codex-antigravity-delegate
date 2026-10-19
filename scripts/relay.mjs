@@ -11,7 +11,7 @@
  *        [--previous-run DIR] [--session-from DIR] [--model LABEL] [--effort LEVEL]
  * Never auto-replays. Never bypasses permissions. See references/runtime.md.
  */
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, renameSync, readFileSync, existsSync, appendFileSync,
   realpathSync, readdirSync, rmSync } from 'node:fs';
@@ -80,11 +80,28 @@ function prepareRunDir(opts) {
   const before = collectEvidence(opts.cd);
   if (before.head !== c.base_commit) throw Error('current HEAD does not match base_commit');
   if (!executed.length && !before.clean) throw Error('initial workspace must be clean; supervisor should create an isolated worktree');
+  if (c.recovery !== undefined && !executed.length) throw Error('permission recovery requires a previous execution');
   if (executed.length) {
     const previous = executed.at(-1);
     if (!opts.previousRun || realpathSync(opts.previousRun) !== previous.dir) throw Error('--previous-run must identify the latest execution attempt');
     const result = readJson(join(previous.dir, 'result.json'));
-    if (!result.process_terminated || result.retry_blocker) throw Error(`previous run requires supervisor recovery: ${result.execution_status}`);
+    if (c.recovery !== undefined) {
+      const recovery = c.recovery;
+      if (!recovery || Array.isArray(recovery) || typeof recovery !== 'object' ||
+          previous.manifest.task_id !== c.task_id || result.task_id !== c.task_id ||
+          previous.manifest.execution_started !== true ||
+          result.attempt_id !== previous.manifest.attempt_id ||
+          recovery.from_attempt_id !== previous.manifest.attempt_id ||
+          recovery.reason !== 'permission_blocked' || result.execution_status !== 'permission_blocked' ||
+          result.retry_blocker !== true || result.process_terminated !== true || result.audit_scope !== 'scope clean' ||
+          recovery.authorization !== 'explicit-user-approval' ||
+          typeof recovery.change !== 'string' || !recovery.change.trim()) {
+        throw Error('permission recovery requires the latest stopped, scope-clean permission_blocked attempt, explicit user authorization and an external permission change');
+      }
+      if (c.conversation_id !== null || opts.sessionFrom) throw Error('permission recovery requires a new conversation');
+    } else if (!result.process_terminated || result.retry_blocker) {
+      throw Error(`previous run requires supervisor recovery: ${result.execution_status}`);
+    }
     if (readJson(join(previous.dir, 'after.json')).fingerprint !== before.fingerprint) throw Error('Git state differs from previous after evidence; audit/replan first');
     for (const key of ['observed_failure', 'evidence', 'expected_behavior', 'rerun_command']) {
       if (typeof c.correction?.[key] !== 'string' || !c.correction[key].trim()) throw Error(`correction.${key} required`);
@@ -373,13 +390,29 @@ function main() {
     printSummary(result, run.resultPath); process.exit(127);
   }
   // Capability check runs no agent prompt. Unsupported versions fail before dispatch.
+  let preflightFailure = 'unsupported_protocol';
   try {
-    const help = execFileSync('agy', ['--help'], { encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL' });
+    const probe = spawnSync('agy', ['--help'], {
+      encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const reason = probe.error ? (probe.error.code === 'ETIMEDOUT' ? 'timeout' : 'spawn_failure')
+      : probe.signal ? 'signal' : probe.status === 0 ? 'exited' : 'nonzero_exit';
+    atomicJson(join(run.dir, 'preflight.json'), {
+      command: ['agy', '--help'], exit_status: probe.status, signal: probe.signal,
+      termination_reason: reason,
+      error: probe.error ? { code: probe.error.code, message: probe.error.message } : null,
+      stdout: probe.stdout ?? '', stderr: probe.stderr ?? '',
+    });
+    if (probe.error || probe.signal || probe.status !== 0) {
+      preflightFailure = reason === 'timeout' ? 'timeout' : 'failed';
+      throw Error(`${reason}: ${probe.error?.code ?? probe.signal ?? probe.status}`);
+    }
+    const help = (probe.stdout ?? '') + '\n' + (probe.stderr ?? '');
     for (const flag of ['--output-format', '--conversation', '--new-project', '--add-dir', '--print-timeout', '--log-file', '--print', ...(opts.c.sandbox ? ['--sandbox'] : [])]) {
       if (!help.includes(flag)) throw Error(`missing ${flag}`);
     }
   } catch (e) {
-    const result = writeResult({ status: 'unsupported_protocol', exitCode: 2, error: `capability preflight failed: ${e.message}` });
+    const result = writeResult({ status: preflightFailure, exitCode: 2, error: `capability preflight failed: ${e.message}` });
     printSummary(result, run.resultPath); process.exit(result.exitCode);
   }
   run.manifest.agy_version = version;

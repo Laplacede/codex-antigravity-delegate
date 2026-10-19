@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, realpathSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,9 +15,17 @@ const relay = join(skill, 'scripts/relay.mjs');
 const fakeSource = `#!/usr/bin/env node
 const fs = require('node:fs'); const cp = require('node:child_process');
 const args = process.argv.slice(2);
-if (args[0] === 'changelog') { console.log('fixture-1.4.1:'); process.exit(0); }
+if (args[0] === 'changelog') { if (process.env.FAKE_MODE === 'help-spawn-failure') fs.unlinkSync(process.argv[1]); console.log('fixture-1.4.1:'); process.exit(0); }
 if (args[0] === '--help') {
-  console.log(process.env.FAKE_MODE === 'old' ? '--print' : '--output-format json --conversation --new-project --add-dir --print-timeout --log-file --sandbox --print'); process.exit(0);
+  fs.appendFileSync(process.env.FAKE_HELP_CALLS, JSON.stringify(args) + '\\n');
+  const help = process.env.FAKE_MODE === 'old' ? '--print' : '--output-format json --conversation --new-project --add-dir --print-timeout --log-file --sandbox --print';
+  if (process.env.FAKE_MODE === 'help-timeout') {
+    process.stdout.write('partial help stdout'); process.stderr.write('partial help stderr'); setInterval(()=>{},1000); return;
+  }
+  if (process.env.FAKE_MODE === 'help-stderr') process.stderr.write(help);
+  else if (process.env.FAKE_MODE === 'help-split') { process.stdout.write('--output-format json --conversation'); process.stderr.write('--new-project --add-dir --print-timeout --log-file --sandbox --print'); }
+  else console.log(help);
+  process.exit(process.env.FAKE_MODE === 'help-nonzero' ? 7 : 0);
 }
 fs.appendFileSync(process.env.FAKE_CALLS, JSON.stringify(args) + '\\n');
 const c = JSON.parse(args.find(a => a.startsWith('--print=')).slice(args.find(a => a.startsWith('--print=')).indexOf('\\n') + 1));
@@ -38,7 +46,7 @@ else {
   if (mode === 'old-response') console.log('old text-only implementation');
   else if (mode === 'wrong-shape') console.log(JSON.stringify({result:{status:'SUCCESS'}}));
   else {
-    const obj = {conversation_id:mode === 'mismatch' ? 'other-conversation' : c.conversation_id || 'conv-001',status:mode === 'native-error' ? 'ERROR' : 'SUCCESS',response:mode === 'empty-response' ? '' : '已完成：root cause, modified files, validations, unresolved issues, no blockers. permission denied is quoted report text only.'};
+    const obj = {conversation_id:mode === 'mismatch' ? 'other-conversation' : c.conversation_id || (c.recovery ? 'conv-recovered' : 'conv-001'),status:mode === 'native-error' ? 'ERROR' : 'SUCCESS',response:mode === 'empty-response' ? '' : '已完成：root cause, modified files, validations, unresolved issues, no blockers. permission denied is quoted report text only.'};
     const bytes=Buffer.from(JSON.stringify(obj)); let i=bytes.indexOf(Buffer.from('已'))+1;
     process.stdout.write(bytes.subarray(0,i)); setTimeout(()=>process.stdout.write(bytes.subarray(i)),5);
     if (mode === 'exit-seven') process.exitCode = 7;
@@ -50,6 +58,9 @@ function fixture(t) {
   t.after(() => { if (!process.env.MY_AGY_KEEP_TEST_FIXTURES) rmSync(root, { recursive: true, force: true }); });
   const repo = join(root, 'repo with spaces'); const bin = join(root, 'bin'); const state = join(root, 'state');
   mkdirSync(repo); mkdirSync(bin); mkdirSync(join(repo, 'src')); mkdirSync(join(repo, 'tests'));
+  // No ambient PATH fallback: a missing fake AGY must never select an installed CLI.
+  symlinkSync(process.execPath,join(bin,'node'));
+  symlinkSync(execFileSync('/usr/bin/which',['git'],{encoding:'utf8'}).trim(),join(bin,'git'));
   const git = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore','pipe','pipe'] }).trim();
   git('init','-q'); git('config','user.name','Fixture'); git('config','user.email','fixture@example.invalid');
   writeFileSync(join(repo,'src/main.js'),'module.exports = 1;\n');
@@ -58,6 +69,7 @@ function fixture(t) {
   git('add','.'); git('commit','-qm','baseline');
   writeFileSync(join(bin,'agy'),fakeSource); chmodSync(join(bin,'agy'),0o755);
   const calls = join(root, 'calls.jsonl');
+  const helpCalls = join(root, 'help-calls.jsonl');
   const c = { schema:'my-agy.contract.v1', task_id:'task', attempt_id:'a0', workspace_absolute_path:repo,
     base_commit:git('rev-parse','HEAD'), conversation_id:null, permission_profile:'authorized-local-write',
     authorization_scope:'Fixture local code only', capability_review:'Fixture binary; no external tools', sandbox:false,
@@ -68,7 +80,7 @@ function fixture(t) {
     acceptance_criteria:['Correct module'],verification_commands:[{cwd:repo,command:'node --check src/main.js',expected:'exit 0'}],
     output_contract:['Root cause; files; validation actually run; unresolved issues; blocker'] };
   const contract = join(root,'contract.json');
-  const env = mode => ({ ...process.env, PATH:bin + ':' + process.env.PATH, FAKE_MODE:mode, FAKE_CALLS:calls });
+  const env = mode => ({ ...process.env, PATH:bin, FAKE_MODE:mode, FAKE_CALLS:calls, FAKE_HELP_CALLS:helpCalls });
   const args = extra => [relay,'--contract',contract,'--state-root',state,...extra];
   const run = (mode='ok', extra=[]) => {
     writeFileSync(contract,JSON.stringify(c));
@@ -83,7 +95,35 @@ function fixture(t) {
     c.attempt_id=id; c.corrective_attempts_used=n;
     c.correction={observed_failure:'Specific failed acceptance',evidence:`fresh evidence ${n}`,expected_behavior:'pass',rerun_command:'node --check src/main.js',process_confirmed_stopped:true,external_side_effects_clear:true};
   };
-  return {root,repo,bin,state,git,c,contract,env,args,run,count,correction};
+  return {root,repo,bin,state,git,c,contract,env,args,run,count,correction,helpCalls};
+}
+
+test('help on stderr exits zero: capability passes, raw diagnostic saved, one help and one execution', t=>{
+  const f=fixture(t);const p=f.run('help-stderr');assert.equal(p.status,0,p.stderr);
+  const probe=JSON.parse(readFileSync(join(p.dir,'preflight.json'),'utf8'));
+  assert.deepEqual(probe.command,['agy','--help']);assert.equal(probe.exit_status,0);
+  assert.equal(probe.termination_reason,'exited');assert.equal(probe.stdout,'');
+  assert.equal(probe.stderr,'--output-format json --conversation --new-project --add-dir --print-timeout --log-file --sandbox --print');
+  assert.equal(p.result.execution_status,'execution_completed');assert.equal(f.count(),1);
+  assert.equal(readFileSync(f.helpCalls,'utf8').trim().split('\n').length,1);
+});
+test('help capability detection combines stdout and stderr', t=>{
+  const f=fixture(t);const p=f.run('help-split');assert.equal(p.status,0,p.stderr);
+  const probe=JSON.parse(readFileSync(join(p.dir,'preflight.json'),'utf8'));
+  assert.match(probe.stdout,/--output-format/);assert.match(probe.stderr,/--new-project/);assert.equal(f.count(),1);
+  assert.equal(readFileSync(f.helpCalls,'utf8').trim().split('\n').length,1);
+});
+for (const [mode,reason,status] of [['help-nonzero','nonzero_exit','failed'],['help-timeout','timeout','timeout'],['help-spawn-failure','spawn_failure','failed']]) {
+  test(`${mode}: diagnostic preserves termination reason; no agent execution or retry`,t=>{
+    const f=fixture(t);const p=f.run(mode);assert.notEqual(p.status,0);
+    const probe=JSON.parse(readFileSync(join(p.dir,'preflight.json'),'utf8'));
+    assert.equal(probe.termination_reason,reason);assert.equal(p.result.execution_status,status);assert.equal(f.count(),0);
+    assert.equal(JSON.parse(readFileSync(join(p.dir,'manifest.json'),'utf8')).execution_started,false);
+    if (reason==='nonzero_exit') { assert.equal(probe.exit_status,7);assert.match(probe.stdout,/--output-format/); }
+    else if (reason==='timeout') { assert.equal(probe.error.code,'ETIMEDOUT');assert.equal(probe.signal,'SIGKILL');assert.equal(probe.stdout,'partial help stdout');assert.equal(probe.stderr,'partial help stderr'); }
+    else { assert.equal(probe.error.code,'ENOENT');assert.equal(probe.exit_status,null); }
+    assert.equal(existsSync(f.helpCalls)?readFileSync(f.helpCalls,'utf8').trim().split('\n').length:0,reason==='spawn_failure'?0:1);
+  });
 }
 
 test('native JSON, UTF-8, argv, private persistent artifacts; execution never accepts', t => {
@@ -148,6 +188,88 @@ test('changed Git state blocks correction before dispatch', t=>{
 test('new evidence required and blockers do not automatically retry', t=>{
   const f=fixture(t);const first=f.run('permission');f.correction(1);
   const p=f.run('ok',['--previous-run',first.dir]);assert.match(p.stderr,/requires supervisor recovery/);assert.equal(f.count(),1);
+});
+function permissionRecovery(f, first, n=1) {
+  f.correction(n);
+  f.c.conversation_id=null;
+  f.c.recovery={from_attempt_id:JSON.parse(readFileSync(join(first.dir,'manifest.json'),'utf8')).attempt_id,
+    reason:'permission_blocked',authorization:'explicit-user-approval',change:'Supervisor added two explicitly approved exact file write permissions outside execution.'};
+}
+for (const [name,mutate,pattern] of [
+  ['missing metadata',f=>{delete f.c.recovery;},/requires supervisor recovery/],
+  ['wrong attempt',f=>{f.c.recovery.from_attempt_id='other';},/permission recovery requires/],
+  ['wrong reason',f=>{f.c.recovery.reason='quota_blocked';},/permission recovery requires/],
+  ['missing authorization',f=>{delete f.c.recovery.authorization;},/permission recovery requires/],
+  ['non-explicit authorization',f=>{f.c.recovery.authorization='agent-approval';},/permission recovery requires/],
+  ['missing external change',f=>{f.c.recovery.change=' ';},/permission recovery requires/],
+  ['wrong counter',f=>{f.c.corrective_attempts_used=0;},/must equal 1/],
+  ['expanded ownership',f=>{f.c.owned_files.paths.push({path:'other',kind:'directory'});},/binding changed/],
+  ['removed forbidden path',f=>{f.c.forbidden_files=[];},/binding changed/],
+  ['changed goal',f=>{f.c.goal='Different goal';},/binding changed/],
+  ['changed acceptance',f=>{f.c.acceptance_criteria=['Weaker'];},/binding changed/],
+  ['changed base',f=>{f.c.base_commit='0'.repeat(40);},/binding changed/],
+  ['reused conversation',f=>{f.c.conversation_id='conv-001';},/requires a new conversation/],
+  ['changed Git',f=>{writeFileSync(join(f.repo,'src/main.js'),'another writer');},/Git state differs/],
+  ['uncertain external side effects',f=>{f.c.correction.external_side_effects_clear=false;},/process and side-effect review/],
+]) {
+  test(`permission recovery rejects ${name} without execution`,t=>{
+    const f=fixture(t);const first=f.run('permission');permissionRecovery(f,first);
+    mutate(f);const p=f.run('ok',['--previous-run',first.dir]);
+    assert.notEqual(p.status,0);assert.match(p.stderr,pattern);assert.equal(f.count(),1);
+  });
+}
+for (const mode of ['auth','quota','network','wrong-shape','scope','ok']) {
+  test(`permission recovery cannot override ${mode}`,t=>{
+    const f=fixture(t);const first=f.run(mode);permissionRecovery(f,first);
+    const p=f.run('ok',['--previous-run',first.dir]);assert.notEqual(p.status,0);
+    assert.match(p.stderr,/permission recovery requires/);assert.equal(f.count(),1);
+  });
+}
+for (const [name,file,mutate] of [
+  ['unknown process','result.json',v=>{v.process_terminated=false;}],
+  ['scope uncertainty','result.json',v=>{v.audit_scope='audit failed';}],
+  ['wrong result task','result.json',v=>{v.task_id='other';}],
+  ['wrong manifest task','manifest.json',v=>{v.task_id='other';}],
+  ['wrong result attempt','result.json',v=>{v.attempt_id='other';}],
+  ['no execution reservation','manifest.json',v=>{v.execution_started=false;}],
+]) {
+  test(`permission recovery rejects fixture history with ${name}`,t=>{
+    const f=fixture(t);const first=f.run('permission');permissionRecovery(f,first);
+    // Synthetic corrupt/uncertain history, confined to this disposable test fixture.
+    const path=join(first.dir,file);const value=JSON.parse(readFileSync(path,'utf8'));
+    mutate(value);writeFileSync(path,JSON.stringify(value));
+    const p=f.run('ok',['--previous-run',first.dir]);assert.notEqual(p.status,0);assert.equal(f.count(),1);
+    assert.match(p.stderr,/permission recovery requires|must equal/);
+  });
+}
+test('permission recovery needs previous execution and the latest previous-run',t=>{
+  const f=fixture(t);f.c.recovery={from_attempt_id:'missing',reason:'permission_blocked',authorization:'explicit-user-approval',change:'approved files'};
+  const initial=f.run();assert.match(initial.stderr,/requires a previous execution/);assert.equal(f.count(),0);
+  delete f.c.recovery;const first=f.run('permission');permissionRecovery(f,first);
+  const noPrevious=f.run();assert.match(noPrevious.stderr,/latest execution attempt/);assert.equal(f.count(),1);
+  const resumed=f.run('ok',['--previous-run',first.dir,'--session-from',first.dir]);
+  assert.match(resumed.stderr,/requires a new conversation/);assert.equal(f.count(),1);
+});
+test('authorized permission recovery preserves blocker history, starts fresh and consumes corrective budget',t=>{
+  const f=fixture(t);const first=f.run('permission');
+  const historyFiles=['manifest.json','result.json','after.json','stdout.json','stderr.log'];
+  const originals=historyFiles.map(name=>readFileSync(join(first.dir,name)));
+  permissionRecovery(f,first);const second=f.run('ok',['--previous-run',first.dir]);
+  assert.equal(second.status,0,second.stderr);assert.equal(f.count(),2);
+  const calls=readFileSync(join(f.root,'calls.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert(calls[1].includes('--new-project'));assert(!calls[1].includes('--conversation'));
+  assert(!calls[1].includes('--dangerously-skip-permissions'));
+  const manifest=JSON.parse(readFileSync(join(second.dir,'manifest.json'),'utf8'));
+  assert.equal(manifest.corrective_attempts_used,1);assert.equal(manifest.attempt_number,2);
+  assert.equal(manifest.contract.conversation_id,null);assert.equal(second.result.conversation_id,'conv-recovered');
+  assert.notEqual(second.result.conversation_id,first.result.conversation_id);assert.deepEqual(manifest.contract.recovery,f.c.recovery);
+  assert.equal(second.result.acceptance,'pending_supervisor_verification');
+  historyFiles.forEach((name,i)=>assert.deepEqual(readFileSync(join(first.dir,name)),originals[i]));
+  assert.equal(JSON.parse(originals[1]).retry_blocker,true);
+  delete f.c.recovery;f.correction(2);const third=f.run('permission',['--previous-run',second.dir]);
+  assert.equal(third.result.execution_status,'permission_blocked');assert.equal(f.count(),3);
+  permissionRecovery(f,third,2);f.c.attempt_id='fourth';
+  const fourth=f.run('ok',['--previous-run',third.dir]);assert.match(fourth.stderr,/exhausted/);assert.equal(f.count(),3);
 });
 test('missing or repeated corrective evidence does not consume another execution',t=>{
   const f=fixture(t);const first=f.run();f.correction(1);delete f.c.correction.observed_failure;
